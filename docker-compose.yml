@@ -1,0 +1,34 @@
+services:
+  api:
+    build: ./apps/api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://raw:raw@db:5432/raw
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: ./apps/web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: raw
+      POSTGRES_USER: raw
+      POSTGRES_PASSWORD: raw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raw -d raw"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
