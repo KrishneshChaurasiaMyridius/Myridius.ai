@@ -160,6 +160,23 @@ class CaseSummary(BaseModel):
     residual_risk: int = Field(ge=1, le=5)
 
 
+class DocumentEvidenceRequest(BaseModel):
+    title: str = Field(min_length=5, max_length=200)
+    document_type: str = Field(min_length=3, max_length=100)
+    content: str = Field(min_length=20, max_length=20_000)
+    source_url: HttpUrl | None = None
+    is_synthetic: Literal[True]
+
+
+class DocumentEvidence(DocumentEvidenceRequest):
+    document_id: str = Field(default_factory=lambda: str(uuid4()))
+    extracted_jurisdictions: list[str] = Field(default_factory=list)
+    extracted_controls: list[str] = Field(default_factory=list)
+    risk_indicators: list[str] = Field(default_factory=list)
+    extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    extracted_by: str = "deterministic-document-extractor-v1"
+
+
 class CaseDetail(CaseSummary):
     version: int
     submitted_at: datetime | None
@@ -168,6 +185,7 @@ class CaseDetail(CaseSummary):
     assessment_draft: Any | None = None
     analyst_override: Any | None = None
     committee_decision: Any | None = None
+    document_evidence: list[DocumentEvidence] = Field(default_factory=list)
 
 
 class RiskAssessmentRequest(BaseModel):
@@ -240,14 +258,35 @@ class PolicyCitation(BaseModel):
 
 
 class PolicySource(PolicyCitation):
-    approved: Literal[True] = True
+    approved: bool = True
     synthetic_data: Literal[True] = True
+    effective_from: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    retired_at: datetime | None = None
+    governance_owner: str = "System seed"
+
+
+class PolicySourceCreateRequest(BaseModel):
+    source_id: str = Field(pattern=r"^[A-Z0-9-]{4,80}$")
+    title: str = Field(min_length=10, max_length=300)
+    excerpt: str = Field(min_length=20, max_length=2_000)
+    topic: str = Field(min_length=3, max_length=100)
+
+
+class PolicyAuditEvent(BaseModel):
+    event_id: str
+    source_id: str
+    action: str
+    actor: str
+    occurred_at: datetime
+    payload: dict[str, object]
 
 
 class AssessmentDraft(BaseModel):
     summary: str
     analyst_questions: list[str]
     citations: list[PolicyCitation]
+    evidence_document_ids: list[str] = Field(default_factory=list)
+    evidence_context: list[str] = Field(default_factory=list)
     retrieval_query: str = ""
     prepared_at: datetime
     generator: str = "deterministic-mock-v1"
@@ -431,6 +470,15 @@ class CaseStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS evidence_documents (
+                    document_id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    document_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS risk_configurations (
                     version TEXT PRIMARY KEY,
                     configuration_json TEXT NOT NULL,
@@ -452,6 +500,18 @@ class CaseStore:
                 CREATE TABLE IF NOT EXISTS policy_sources (
                     source_id TEXT PRIMARY KEY,
                     source_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
                 )
                 """
             )
@@ -497,6 +557,74 @@ class CaseStore:
             rows = connection.execute("SELECT source_json FROM policy_sources ORDER BY source_id").fetchall()
         return [PolicySource.model_validate_json(row["source_json"]) for row in rows]
 
+    def _append_policy_audit_event(
+        self, connection: StoreConnection, source_id: str, action: str, payload: dict[str, object], actor: Actor
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO policy_audit_events (event_id, source_id, action, actor, occurred_at, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid4()),
+                source_id,
+                action,
+                actor.display_name,
+                datetime.now(timezone.utc).isoformat(),
+                json.dumps(payload, sort_keys=True),
+            ),
+        )
+
+    def add_policy_source(self, request: PolicySourceCreateRequest, actor: Actor) -> PolicySource:
+        source = PolicySource(**request.model_dump(), governance_owner=actor.display_name)
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT source_id FROM policy_sources WHERE source_id = ?", (source.source_id,)
+            ).fetchone()
+            if existing:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source identifier already exists.")
+            connection.execute(
+                "INSERT INTO policy_sources (source_id, source_json) VALUES (?, ?)",
+                (source.source_id, source.model_dump_json()),
+            )
+            self._append_policy_audit_event(
+                connection, source.source_id, "policy_source_added", {"topic": source.topic}, actor
+            )
+        return source
+
+    def retire_policy_source(self, source_id: str, actor: Actor) -> PolicySource:
+        with self._connect() as connection:
+            row = connection.execute("SELECT source_json FROM policy_sources WHERE source_id = ?", (source_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy source not found.")
+            source = PolicySource.model_validate_json(row["source_json"])
+            if source.retired_at:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source is already retired.")
+            retired = source.model_copy(update={"approved": False, "retired_at": datetime.now(timezone.utc)})
+            connection.execute(
+                "UPDATE policy_sources SET source_json = ? WHERE source_id = ?",
+                (retired.model_dump_json(), source_id),
+            )
+            self._append_policy_audit_event(connection, source_id, "policy_source_retired", {}, actor)
+        return retired
+
+    def policy_audit_events(self, source_id: str) -> list[PolicyAuditEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM policy_audit_events WHERE source_id = ? ORDER BY occurred_at, event_id", (source_id,)
+            ).fetchall()
+        return [
+            PolicyAuditEvent(
+                event_id=row["event_id"],
+                source_id=row["source_id"],
+                action=row["action"],
+                actor=row["actor"],
+                occurred_at=row["occurred_at"],
+                payload=json.loads(row["payload_json"]),
+            )
+            for row in rows
+        ]
+
     def operations_metrics(self) -> OperationsMetrics:
         cases = self.list()
         cases_by_status = {status.value: 0 for status in CaseStatus}
@@ -520,7 +648,7 @@ class CaseStore:
         citations = [
             PolicyCitation(**source.model_dump(exclude={"approved", "synthetic_data"}))
             for source in self.policy_sources()
-            if source.approved and source.topic in topics
+            if source.approved and source.retired_at is None and source.topic in topics
         ]
         if not citations:
             raise HTTPException(
@@ -567,10 +695,17 @@ class CaseStore:
             connection.execute("DELETE FROM audit_events")
             connection.execute("DELETE FROM cases")
             connection.execute("DELETE FROM risk_configurations")
+            connection.execute("DELETE FROM policy_audit_events")
+            connection.execute("DELETE FROM policy_sources")
             connection.execute(
                 "INSERT INTO risk_configurations (version, configuration_json, active) VALUES (?, ?, 1)",
                 (default_configuration.version, default_configuration.model_dump_json()),
             )
+            for source in self._default_policy_sources():
+                connection.execute(
+                    "INSERT INTO policy_sources (source_id, source_json) VALUES (?, ?)",
+                    (source.source_id, source.model_dump_json()),
+                )
 
     @staticmethod
     def _serialize_intake(intake: IntakeRequest) -> str:
@@ -609,6 +744,34 @@ class CaseStore:
                 else None
             ),
         )
+
+    @staticmethod
+    def _extract_document_evidence(request: DocumentEvidenceRequest) -> DocumentEvidence:
+        content = request.content.lower()
+        jurisdictions = sorted({code for code in ("GB", "US", "EU", "SG", "AE") if code.lower() in content})
+        controls = [
+            control
+            for control in ("Sanctions screening", "Transaction monitoring", "Customer due diligence")
+            if control.lower() in content
+        ]
+        indicators = [
+            indicator
+            for indicator in ("cross-border", "third party", "high-risk", "cash", "crypto")
+            if indicator in content
+        ]
+        return DocumentEvidence(
+            **request.model_dump(),
+            extracted_jurisdictions=jurisdictions,
+            extracted_controls=controls,
+            risk_indicators=indicators,
+        )
+
+    def document_evidence(self, case_id: str) -> list[DocumentEvidence]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT document_json FROM evidence_documents WHERE case_id = ? ORDER BY document_id", (case_id,)
+            ).fetchall()
+        return [DocumentEvidence.model_validate_json(row["document_json"]) for row in rows]
 
     @staticmethod
     def _hash_event(
@@ -720,7 +883,26 @@ class CaseStore:
             row = connection.execute("SELECT * FROM cases WHERE case_id = ?", (case_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.")
-        return self._row_to_case(row)
+        return self._row_to_case(row).model_copy(update={"document_evidence": self.document_evidence(case_id)})
+
+    def add_document_evidence(self, case_id: str, request: DocumentEvidenceRequest, actor: Actor) -> DocumentEvidence:
+        case = self.get(case_id)
+        if case.status is not CaseStatus.DRAFT:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Evidence can only be added while the case is a draft.")
+        evidence = self._extract_document_evidence(request)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO evidence_documents (document_id, case_id, document_json) VALUES (?, ?, ?)",
+                (evidence.document_id, case_id, evidence.model_dump_json()),
+            )
+            self._append_audit_event(
+                connection,
+                case_id,
+                "document_evidence_added",
+                {"document_id": evidence.document_id, "document_type": evidence.document_type, "synthetic": True},
+                actor=actor.display_name,
+            )
+        return evidence
 
     def submit(self, case_id: str) -> CaseDetail:
         case = self.get(case_id)
@@ -914,6 +1096,11 @@ class CaseStore:
         assessment = case.risk_assessment
         retrieval_query = f"{case.change_type.replace('_', ' ')} risk assessment and control governance"
         citations = self.retrieve_policy_sources({"risk_based_approach", "controls_and_governance"})
+        evidence_context = [
+            f"{evidence.title}: jurisdictions={', '.join(evidence.extracted_jurisdictions) or 'none'}; "
+            f"indicators={', '.join(evidence.risk_indicators) or 'none'}"
+            for evidence in case.document_evidence
+        ]
         draft = AssessmentDraft(
             summary=(
                 f"The proposed {case.change_type.replace('_', ' ')} change has an inherent risk score of "
@@ -925,6 +1112,8 @@ class CaseStore:
                 "Validate the operating effectiveness evidence for the proposed transaction monitoring control.",
             ],
             citations=citations,
+            evidence_document_ids=[evidence.document_id for evidence in case.document_evidence],
+            evidence_context=evidence_context,
             retrieval_query=retrieval_query,
             prepared_at=datetime.now(timezone.utc),
         )
@@ -942,6 +1131,7 @@ class CaseStore:
                     "generator": draft.generator,
                     "retrieval_query": retrieval_query,
                     "citation_ids": [citation.source_id for citation in citations],
+                    "evidence_document_ids": draft.evidence_document_ids,
                 },
             )
         return updated
@@ -1152,6 +1342,28 @@ def list_policy_sources() -> list[PolicySource]:
     return case_store.policy_sources()
 
 
+@app.post("/api/v1/policy-sources", response_model=PolicySource, status_code=status.HTTP_201_CREATED, tags=["policy"])
+def create_policy_source(
+    request: PolicySourceCreateRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.ADMINISTRATOR))],
+) -> PolicySource:
+    return case_store.add_policy_source(request, actor)
+
+
+@app.post("/api/v1/policy-sources/{source_id}/retire", response_model=PolicySource, tags=["policy"])
+def retire_policy_source(
+    source_id: str, actor: Annotated[Actor, Depends(require_roles(Role.ADMINISTRATOR))]
+) -> PolicySource:
+    return case_store.retire_policy_source(source_id, actor)
+
+
+@app.get("/api/v1/policy-sources/{source_id}/audit-events", response_model=list[PolicyAuditEvent], tags=["policy"])
+def list_policy_audit_events(
+    source_id: str, actor: Annotated[Actor, Depends(require_roles(Role.AUDITOR, Role.ADMINISTRATOR))]
+) -> list[PolicyAuditEvent]:
+    return case_store.policy_audit_events(source_id)
+
+
 @app.get("/api/v1/cases", response_model=list[CaseSummary], tags=["cases"])
 def list_cases() -> list[CaseSummary]:
     return case_store.list()
@@ -1196,6 +1408,18 @@ def update_case_intake(
     if case.intake.business_owner != actor.display_name or intake.business_owner != actor.display_name:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only update their own cases.")
     return case_store.update_draft_intake(case_id, intake)
+
+
+@app.post("/api/v1/cases/{case_id}/document-evidence", response_model=DocumentEvidence, status_code=status.HTTP_201_CREATED, tags=["documents"])
+def add_case_document_evidence(
+    case_id: str,
+    request: DocumentEvidenceRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER))],
+) -> DocumentEvidence:
+    case = case_store.get(case_id)
+    if case.intake.business_owner != actor.display_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only add evidence to their own cases.")
+    return case_store.add_document_evidence(case_id, request, actor)
 
 
 @app.post("/api/v1/cases/{case_id}/risk-assessment", response_model=CaseDetail, tags=["risk"])

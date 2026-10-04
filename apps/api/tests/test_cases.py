@@ -98,6 +98,31 @@ def test_product_owner_can_update_a_draft_with_versioned_history() -> None:
     assert [event["action"] for event in events] == ["case_created", "draft_intake_updated"]
 
 
+def test_synthetic_document_evidence_is_extracted_and_used_as_draft_context() -> None:
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    evidence = client.post(
+        f"/api/v1/cases/{case_id}/document-evidence",
+        json={
+            "title": "Synthetic control test report",
+            "document_type": "control_test",
+            "content": "Synthetic GB and US cross-border third party control testing confirms sanctions screening and transaction monitoring.",
+            "source_url": "https://example.test/synthetic-control-report.pdf",
+            "is_synthetic": True,
+        },
+    )
+    assert evidence.status_code == 201
+    assert evidence.json()["extracted_jurisdictions"] == ["GB", "US"]
+    assert evidence.json()["extracted_controls"] == ["Sanctions screening", "Transaction monitoring"]
+
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    drafted = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    assert drafted.status_code == 200
+    assert drafted.json()["assessment_draft"]["evidence_document_ids"] == [evidence.json()["document_id"]]
+    assert "jurisdictions=GB, US" in drafted.json()["assessment_draft"]["evidence_context"][0]
+
+
 def test_case_events_form_a_hash_linked_audit_trail() -> None:
     created = client.post("/api/v1/cases", json=valid_intake()).json()
     client.post(f"/api/v1/cases/{created['case_id']}/submit")
@@ -296,6 +321,27 @@ def test_policy_source_register_contains_approved_synthetic_sources() -> None:
         "RAW-SYNTHETIC-POLICY-01",
     }
     assert all(source["approved"] and source["synthetic_data"] for source in response.json())
+
+
+def test_administrator_can_govern_policy_source_lifecycle() -> None:
+    created = client.post(
+        "/api/v1/policy-sources",
+        headers=ADMINISTRATOR_HEADERS,
+        json={
+            "source_id": "RAW-SYNTHETIC-POLICY-02",
+            "title": "Synthetic Vendor Change Standard",
+            "excerpt": "Synthetic vendor changes require documented third-party due diligence before approval.",
+            "topic": "third_party_governance",
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["approved"] is True
+    retired = client.post("/api/v1/policy-sources/RAW-SYNTHETIC-POLICY-02/retire", headers=ADMINISTRATOR_HEADERS)
+    assert retired.status_code == 200
+    assert retired.json()["approved"] is False
+    audit = client.get("/api/v1/policy-sources/RAW-SYNTHETIC-POLICY-02/audit-events", headers=AUDITOR_HEADERS)
+    assert [event["action"] for event in audit.json()] == ["policy_source_added", "policy_source_retired"]
 
 
 def test_operations_metrics_expose_workflow_and_audit_health() -> None:
