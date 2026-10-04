@@ -5,13 +5,37 @@ from enum import StrEnum
 import hashlib
 import json
 import math
+import os
 import sqlite3
-from typing import Any, Literal, Sequence
+from typing import Annotated, Any, Callable, Literal, Sequence
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl, ValidationInfo, field_validator, model_validator
+
+
+class StoreConnection:
+    """Minimal SQL dialect adapter for SQLite local demos and PostgreSQL deployments."""
+
+    def __init__(self, connection: Any, is_postgres: bool) -> None:
+        self.connection = connection
+        self.is_postgres = is_postgres
+
+    def __enter__(self) -> "StoreConnection":
+        return self
+
+    def __exit__(self, exception_type: object, exception: object, traceback: object) -> None:
+        if exception_type is None:
+            self.connection.commit()
+        else:
+            self.connection.rollback()
+        self.connection.close()
+
+    def execute(self, statement: str, parameters: tuple[object, ...] = ()) -> Any:
+        if self.is_postgres:
+            statement = statement.replace("?", "%s")
+        return self.connection.execute(statement, parameters)
 
 
 class CaseStatus(StrEnum):
@@ -49,6 +73,47 @@ class ConditionStatus(StrEnum):
     VERIFIED = "verified"
 
 
+class Role(StrEnum):
+    PRODUCT_OWNER = "product_owner"
+    ANALYST = "analyst"
+    COMMITTEE_MEMBER = "committee_member"
+    AUDITOR = "auditor"
+    ADMINISTRATOR = "administrator"
+
+
+class Actor(BaseModel):
+    actor_id: str
+    display_name: str
+    role: Role
+
+
+DEMO_ACTORS = {
+    "product-owner": Actor(actor_id="product-owner", display_name="Taylor Product Owner", role=Role.PRODUCT_OWNER),
+    "analyst": Actor(actor_id="analyst", display_name="Alex FCRM Analyst", role=Role.ANALYST),
+    "committee": Actor(actor_id="committee", display_name="Morgan Committee Member", role=Role.COMMITTEE_MEMBER),
+    "auditor": Actor(actor_id="auditor", display_name="Avery Internal Auditor", role=Role.AUDITOR),
+    "administrator": Actor(actor_id="administrator", display_name="Casey Risk Administrator", role=Role.ADMINISTRATOR),
+}
+
+
+def current_actor(x_actor_id: Annotated[str | None, Header()] = None) -> Actor:
+    if not x_actor_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="An X-Actor-Id header is required.")
+    actor = DEMO_ACTORS.get(x_actor_id)
+    if not actor:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown demo actor.")
+    return actor
+
+
+def require_roles(*roles: Role) -> Callable[[Actor], Actor]:
+    def dependency(actor: Annotated[Actor, Depends(current_actor)]) -> Actor:
+        if actor.role not in roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor is not authorised for this action.")
+        return actor
+
+    return dependency
+
+
 class IntakeRequest(BaseModel):
     title: str = Field(min_length=8, max_length=160)
     change_type: ChangeType
@@ -75,6 +140,15 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     service: str = "risk-assessment-api"
     timestamp: datetime
+
+
+class OperationsMetrics(BaseModel):
+    generated_at: datetime
+    cases_by_status: dict[str, int]
+    audit_event_count: int
+    invalid_audit_chain_count: int
+    active_risk_configuration: str
+    policy_source_count: int
 
 
 class CaseSummary(BaseModel):
@@ -107,6 +181,38 @@ class RiskAssessmentRequest(BaseModel):
     analyst: str = Field(min_length=3, max_length=120)
 
 
+RISK_FACTORS = ("customer", "product", "channel", "geography", "transaction", "third_party")
+
+
+class RiskConfiguration(BaseModel):
+    version: str = Field(pattern=r"^risk-config-v[1-9][0-9]*$")
+    factor_weights: dict[str, float]
+    control_mitigation_divisor: float = Field(gt=4, le=10)
+    low_risk_maximum: int = Field(ge=1, le=4)
+    moderate_risk_maximum: int = Field(ge=2, le=5)
+    updated_by: str = Field(min_length=3, max_length=120)
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_scoring_parameters(self) -> "RiskConfiguration":
+        if set(self.factor_weights) != set(RISK_FACTORS):
+            raise ValueError("Factor weights must cover each risk factor exactly once.")
+        if any(weight <= 0 for weight in self.factor_weights.values()):
+            raise ValueError("Factor weights must be greater than zero.")
+        if self.low_risk_maximum >= self.moderate_risk_maximum:
+            raise ValueError("The low-risk maximum must be below the moderate-risk maximum.")
+        return self
+
+
+class RiskConfigurationUpdateRequest(BaseModel):
+    version: str = Field(pattern=r"^risk-config-v[1-9][0-9]*$")
+    factor_weights: dict[str, float]
+    control_mitigation_divisor: float = Field(gt=4, le=10)
+    low_risk_maximum: int = Field(ge=1, le=4)
+    moderate_risk_maximum: int = Field(ge=2, le=5)
+    updated_by: str = Field(min_length=3, max_length=120)
+
+
 class RiskAssessment(BaseModel):
     factor_scores: dict[str, int]
     inherent_risk: int = Field(ge=1, le=5)
@@ -114,6 +220,7 @@ class RiskAssessment(BaseModel):
     residual_risk: int = Field(ge=1, le=5)
     rating: RiskLevel
     configuration_version: str = "risk-config-v1"
+    configuration_snapshot: dict[str, Any] = Field(default_factory=dict)
     algorithm_version: str = "deterministic-v1"
     assessed_at: datetime
     assessed_by: str
@@ -132,10 +239,16 @@ class PolicyCitation(BaseModel):
     topic: str
 
 
+class PolicySource(PolicyCitation):
+    approved: Literal[True] = True
+    synthetic_data: Literal[True] = True
+
+
 class AssessmentDraft(BaseModel):
     summary: str
     analyst_questions: list[str]
     citations: list[PolicyCitation]
+    retrieval_query: str = ""
     prepared_at: datetime
     generator: str = "deterministic-mock-v1"
     decision_authority: Literal["human_only"] = "human_only"
@@ -241,14 +354,29 @@ class EvidencePackage(BaseModel):
 class CaseStore:
     """SQLite-backed local demo store with append-only audit events."""
 
-    def __init__(self, database_path: str = "raw.db") -> None:
+    def __init__(self, database_path: str = "raw.db", database_url: str | None = None) -> None:
         self.database_path = database_path
+        self.database_url = database_url
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @property
+    def is_postgres(self) -> bool:
+        return bool(self.database_url)
+
+    def _connect(self) -> StoreConnection:
+        if self.database_url:
+            try:
+                import psycopg
+                from psycopg.rows import dict_row
+            except ImportError as error:
+                raise RuntimeError("PostgreSQL deployment requires psycopg.") from error
+            connection = psycopg.connect(
+                self.database_url.replace("postgresql+psycopg://", "postgresql://"), row_factory=dict_row
+            )
+            return StoreConnection(connection, is_postgres=True)
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        return StoreConnection(connection, is_postgres=False)
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -271,10 +399,11 @@ class CaseStore:
                 )
                 """
             )
-            existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(cases)")}
-            for column in ("risk_assessment_json", "assessment_draft_json", "analyst_override_json", "committee_decision_json"):
-                if column not in existing_columns:
-                    connection.execute(f"ALTER TABLE cases ADD COLUMN {column} TEXT")
+            if not self.is_postgres:
+                existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(cases)")}
+                for column in ("risk_assessment_json", "assessment_draft_json", "analyst_override_json", "committee_decision_json"):
+                    if column not in existing_columns:
+                        connection.execute(f"ALTER TABLE cases ADD COLUMN {column} TEXT")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -289,12 +418,159 @@ class CaseStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS intake_versions (
+                    case_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    intake_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (case_id, version)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS risk_configurations (
+                    version TEXT PRIMARY KEY,
+                    configuration_json TEXT NOT NULL,
+                    active INTEGER NOT NULL CHECK(active IN (0, 1))
+                )
+                """
+            )
+            active_configuration = connection.execute(
+                "SELECT version FROM risk_configurations WHERE active = 1"
+            ).fetchone()
+            if not active_configuration:
+                default_configuration = self._default_risk_configuration()
+                connection.execute(
+                    "INSERT INTO risk_configurations (version, configuration_json, active) VALUES (?, ?, 1)",
+                    (default_configuration.version, default_configuration.model_dump_json()),
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS policy_sources (
+                    source_id TEXT PRIMARY KEY,
+                    source_json TEXT NOT NULL
+                )
+                """
+            )
+            source_count = connection.execute("SELECT COUNT(*) AS count FROM policy_sources").fetchone()["count"]
+            if not source_count:
+                for source in self._default_policy_sources():
+                    connection.execute(
+                        "INSERT INTO policy_sources (source_id, source_json) VALUES (?, ?)",
+                        (source.source_id, source.model_dump_json()),
+                    )
+
+    @staticmethod
+    def _default_risk_configuration() -> RiskConfiguration:
+        return RiskConfiguration(
+            version="risk-config-v1",
+            factor_weights={factor: 1 for factor in RISK_FACTORS},
+            control_mitigation_divisor=5,
+            low_risk_maximum=2,
+            moderate_risk_maximum=3,
+            updated_by="System seed",
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    @staticmethod
+    def _default_policy_sources() -> list[PolicySource]:
+        return [
+            PolicySource(
+                source_id="FATF-RBA-2014-1",
+                title="FATF Guidance: The Risk-Based Approach",
+                excerpt="Risk assessment should identify and understand the risks a firm faces and apply proportionate mitigation.",
+                topic="risk_based_approach",
+            ),
+            PolicySource(
+                source_id="RAW-SYNTHETIC-POLICY-01",
+                title="Synthetic FCRM Product Change Standard",
+                excerpt="Controls mitigate residual risk but do not eliminate the need for a documented human decision.",
+                topic="controls_and_governance",
+            ),
+        ]
+
+    def policy_sources(self) -> list[PolicySource]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT source_json FROM policy_sources ORDER BY source_id").fetchall()
+        return [PolicySource.model_validate_json(row["source_json"]) for row in rows]
+
+    def operations_metrics(self) -> OperationsMetrics:
+        cases = self.list()
+        cases_by_status = {status.value: 0 for status in CaseStatus}
+        invalid_audit_chain_count = 0
+        for case in cases:
+            cases_by_status[case.status] += 1
+            if not self.verify_audit_events(case.case_id).valid:
+                invalid_audit_chain_count += 1
+        with self._connect() as connection:
+            audit_event_count = connection.execute("SELECT COUNT(*) AS count FROM audit_events").fetchone()["count"]
+        return OperationsMetrics(
+            generated_at=datetime.now(timezone.utc),
+            cases_by_status=cases_by_status,
+            audit_event_count=audit_event_count,
+            invalid_audit_chain_count=invalid_audit_chain_count,
+            active_risk_configuration=self.active_risk_configuration().version,
+            policy_source_count=len(self.policy_sources()),
+        )
+
+    def retrieve_policy_sources(self, topics: set[str]) -> list[PolicyCitation]:
+        citations = [
+            PolicyCitation(**source.model_dump(exclude={"approved", "synthetic_data"}))
+            for source in self.policy_sources()
+            if source.approved and source.topic in topics
+        ]
+        if not citations:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No approved policy source matched the assessment; analyst escalation is required.",
+            )
+        return citations
+
+    def active_risk_configuration(self) -> RiskConfiguration:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT configuration_json FROM risk_configurations WHERE active = 1"
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="No active risk configuration.")
+        return RiskConfiguration.model_validate_json(row["configuration_json"])
+
+    def activate_risk_configuration(
+        self, request: RiskConfigurationUpdateRequest, actor: Actor
+    ) -> RiskConfiguration:
+        configuration = RiskConfiguration(
+            **request.model_dump(exclude={"updated_by"}), updated_by=actor.display_name, updated_at=datetime.now(timezone.utc)
+        )
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT version FROM risk_configurations WHERE version = ?", (configuration.version,)
+            ).fetchone()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Risk configuration version already exists and cannot be overwritten.",
+                )
+            connection.execute("UPDATE risk_configurations SET active = 0 WHERE active = 1")
+            connection.execute(
+                "INSERT INTO risk_configurations (version, configuration_json, active) VALUES (?, ?, 1)",
+                (configuration.version, configuration.model_dump_json()),
+            )
+        return configuration
 
     def reset(self) -> None:
         """Test helper; production code has no deletion endpoint for audit evidence."""
+        default_configuration = self._default_risk_configuration()
         with self._connect() as connection:
             connection.execute("DELETE FROM audit_events")
             connection.execute("DELETE FROM cases")
+            connection.execute("DELETE FROM risk_configurations")
+            connection.execute(
+                "INSERT INTO risk_configurations (version, configuration_json, active) VALUES (?, ?, 1)",
+                (default_configuration.version, default_configuration.model_dump_json()),
+            )
 
     @staticmethod
     def _serialize_intake(intake: IntakeRequest) -> str:
@@ -390,7 +666,8 @@ class CaseStore:
 
     def list(self) -> list[CaseSummary]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM cases ORDER BY rowid DESC").fetchall()
+            order_by = "case_id DESC" if self.is_postgres else "rowid DESC"
+            rows = connection.execute(f"SELECT * FROM cases ORDER BY {order_by}").fetchall()
         return [CaseSummary.model_validate(dict(row)) for row in rows]
 
     def create(self, intake: IntakeRequest) -> CaseDetail:
@@ -432,6 +709,10 @@ class CaseStore:
                 {"status": CaseStatus.DRAFT, "version": 1, "synthetic": True},
                 actor=intake.business_owner,
             )
+            connection.execute(
+                "INSERT INTO intake_versions (case_id, version, intake_json, created_at) VALUES (?, ?, ?, ?)",
+                (case_id, case.version, self._serialize_intake(intake), datetime.now(timezone.utc).isoformat()),
+            )
         return case
 
     def get(self, case_id: str) -> CaseDetail:
@@ -470,21 +751,55 @@ class CaseStore:
             )
         return submitted
 
+    def update_draft_intake(self, case_id: str, intake: IntakeRequest) -> CaseDetail:
+        case = self.get(case_id)
+        if case.status is not CaseStatus.DRAFT:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only draft cases can be edited; create a new versioned assessment after submission.",
+            )
+        updated = case.model_copy(
+            update={
+                "title": intake.title,
+                "change_type": intake.change_type,
+                "intake": intake,
+                "version": case.version + 1,
+            }
+        )
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE cases SET title = ?, change_type = ?, version = ?, intake_json = ? WHERE case_id = ?",
+                (updated.title, updated.change_type, updated.version, self._serialize_intake(intake), case_id),
+            )
+            connection.execute(
+                "INSERT INTO intake_versions (case_id, version, intake_json, created_at) VALUES (?, ?, ?, ?)",
+                (case_id, updated.version, self._serialize_intake(intake), datetime.now(timezone.utc).isoformat()),
+            )
+            self._append_audit_event(
+                connection,
+                case_id,
+                "draft_intake_updated",
+                {"previous_version": case.version, "version": updated.version, "synthetic": True},
+                actor=intake.business_owner,
+            )
+        return updated
+
     @staticmethod
-    def _rating(score: int) -> RiskLevel:
-        if score <= 2:
+    def _rating(score: int, configuration: RiskConfiguration) -> RiskLevel:
+        if score <= configuration.low_risk_maximum:
             return RiskLevel.LOW
-        if score == 3:
+        if score <= configuration.moderate_risk_maximum:
             return RiskLevel.MODERATE
         return RiskLevel.HIGH
 
-    def assess_risk(self, case_id: str, request: RiskAssessmentRequest) -> CaseDetail:
+    def assess_risk(self, case_id: str, request: RiskAssessmentRequest, actor: Actor) -> CaseDetail:
         case = self.get(case_id)
         if case.status is not CaseStatus.INTAKE_REVIEW:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Only intake-review cases can enter analyst risk review.",
             )
+        configuration = self.active_risk_configuration()
         factor_scores = {
             "customer": request.customer_risk,
             "product": request.product_risk,
@@ -493,17 +808,22 @@ class CaseStore:
             "transaction": request.transaction_risk,
             "third_party": request.third_party_risk,
         }
-        inherent_risk = math.ceil(sum(factor_scores.values()) / len(factor_scores))
-        mitigation = request.control_effectiveness / 5
+        weighted_score = sum(
+            factor_scores[factor] * configuration.factor_weights[factor] for factor in RISK_FACTORS
+        ) / sum(configuration.factor_weights.values())
+        inherent_risk = math.ceil(weighted_score)
+        mitigation = request.control_effectiveness / configuration.control_mitigation_divisor
         residual_risk = max(1, math.ceil(inherent_risk * (1 - mitigation)))
         assessment = RiskAssessment(
             factor_scores=factor_scores,
             inherent_risk=inherent_risk,
             control_effectiveness=request.control_effectiveness,
             residual_risk=residual_risk,
-            rating=self._rating(residual_risk),
+            rating=self._rating(residual_risk, configuration),
+            configuration_version=configuration.version,
+            configuration_snapshot=configuration.model_dump(mode="json"),
             assessed_at=datetime.now(timezone.utc),
-            assessed_by=request.analyst,
+            assessed_by=actor.display_name,
         )
         updated = case.model_copy(
             update={
@@ -538,13 +858,14 @@ class CaseStore:
                     "inherent_risk": inherent_risk,
                     "control_effectiveness": request.control_effectiveness,
                     "residual_risk": residual_risk,
-                    "configuration_version": assessment.configuration_version,
+                    "configuration_version": configuration.version,
+                    "configuration": assessment.configuration_snapshot,
                 },
-                actor=request.analyst,
+                actor=actor.display_name,
             )
         return updated
 
-    def override_risk(self, case_id: str, request: AnalystOverrideRequest) -> CaseDetail:
+    def override_risk(self, case_id: str, request: AnalystOverrideRequest, actor: Actor) -> CaseDetail:
         case = self.get(case_id)
         if case.status is not CaseStatus.ANALYST_REVIEW or not case.risk_assessment:
             raise HTTPException(
@@ -555,7 +876,7 @@ class CaseStore:
             previous_residual_risk=case.residual_risk,
             residual_risk=request.residual_risk,
             rationale=request.rationale,
-            analyst=request.analyst,
+            analyst=actor.display_name,
             overridden_at=datetime.now(timezone.utc),
         )
         updated = case.model_copy(
@@ -579,7 +900,7 @@ class CaseStore:
                     "residual_risk": override.residual_risk,
                     "rationale": override.rationale,
                 },
-                actor=request.analyst,
+                actor=actor.display_name,
             )
         return updated
 
@@ -591,20 +912,8 @@ class CaseStore:
                 detail="Only assessed cases in analyst review can receive an assessment draft.",
             )
         assessment = case.risk_assessment
-        citations = [
-            PolicyCitation(
-                source_id="FATF-RBA-2014-1",
-                title="FATF Guidance: The Risk-Based Approach",
-                excerpt="Risk assessment should identify and understand the risks a firm faces and apply proportionate mitigation.",
-                topic="risk_based_approach",
-            ),
-            PolicyCitation(
-                source_id="RAW-SYNTHETIC-POLICY-01",
-                title="Synthetic FCRM Product Change Standard",
-                excerpt="Controls mitigate residual risk but do not eliminate the need for a documented human decision.",
-                topic="controls_and_governance",
-            ),
-        ]
+        retrieval_query = f"{case.change_type.replace('_', ' ')} risk assessment and control governance"
+        citations = self.retrieve_policy_sources({"risk_based_approach", "controls_and_governance"})
         draft = AssessmentDraft(
             summary=(
                 f"The proposed {case.change_type.replace('_', ' ')} change has an inherent risk score of "
@@ -616,6 +925,7 @@ class CaseStore:
                 "Validate the operating effectiveness evidence for the proposed transaction monitoring control.",
             ],
             citations=citations,
+            retrieval_query=retrieval_query,
             prepared_at=datetime.now(timezone.utc),
         )
         updated = case.model_copy(update={"assessment_draft": draft, "version": case.version + 1})
@@ -628,11 +938,15 @@ class CaseStore:
                 connection,
                 case_id,
                 "assessment_drafted",
-                {"generator": draft.generator, "citation_ids": [citation.source_id for citation in citations]},
+                {
+                    "generator": draft.generator,
+                    "retrieval_query": retrieval_query,
+                    "citation_ids": [citation.source_id for citation in citations],
+                },
             )
         return updated
 
-    def send_to_committee(self, case_id: str, analyst: str) -> CaseDetail:
+    def send_to_committee(self, case_id: str, actor: Actor) -> CaseDetail:
         case = self.get(case_id)
         if case.status is not CaseStatus.ANALYST_REVIEW or not case.risk_assessment:
             raise HTTPException(
@@ -650,11 +964,11 @@ class CaseStore:
                 case_id,
                 "sent_to_committee",
                 {"residual_risk": updated.residual_risk, "version": updated.version},
-                actor=analyst,
+                actor=actor.display_name,
             )
         return updated
 
-    def decide(self, case_id: str, request: CommitteeDecisionRequest) -> CaseDetail:
+    def decide(self, case_id: str, request: CommitteeDecisionRequest, actor: Actor) -> CaseDetail:
         case = self.get(case_id)
         if case.status is not CaseStatus.COMMITTEE_DECISION:
             raise HTTPException(
@@ -664,7 +978,7 @@ class CaseStore:
         decision = CommitteeDecision(
             decision=request.decision,
             rationale=request.rationale,
-            committee_member=request.committee_member,
+            committee_member=actor.display_name,
             decided_at=datetime.now(timezone.utc),
             conditions=[CommitteeCondition(**condition.model_dump()) for condition in request.conditions],
         )
@@ -685,12 +999,12 @@ class CaseStore:
                     "conditions": [condition.model_dump(mode="json") for condition in decision.conditions],
                     "version": updated.version,
                 },
-                actor=request.committee_member,
+                actor=actor.display_name,
             )
         return updated
 
     def verify_condition(
-        self, case_id: str, condition_id: str, request: ConditionVerificationRequest
+        self, case_id: str, condition_id: str, request: ConditionVerificationRequest, actor: Actor
     ) -> CaseDetail:
         case = self.get(case_id)
         if case.status is not CaseStatus.DECIDED or not case.committee_decision:
@@ -709,7 +1023,7 @@ class CaseStore:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Committee condition is already verified.")
         verified_at = datetime.now(timezone.utc)
         conditions[condition_index] = condition.model_copy(
-            update={"status": ConditionStatus.VERIFIED, "verified_by": request.verifier, "verified_at": verified_at}
+            update={"status": ConditionStatus.VERIFIED, "verified_by": actor.display_name, "verified_at": verified_at}
         )
         decision = case.committee_decision.model_copy(update={"conditions": conditions})
         updated = case.model_copy(update={"committee_decision": decision, "version": case.version + 1})
@@ -727,7 +1041,7 @@ class CaseStore:
                     "evidence_summary": request.evidence_summary,
                     "verified_at": verified_at.isoformat(),
                 },
-                actor=request.verifier,
+                actor=actor.display_name,
             )
         return updated
 
@@ -767,7 +1081,7 @@ class CaseStore:
             previous_hash = event.event_hash
         return AuditVerification(case_id=case_id, event_count=len(events), valid=True)
 
-    def evidence_package(self, case_id: str, requested_by: str = "examiner") -> EvidencePackage:
+    def evidence_package(self, case_id: str, actor: Actor) -> EvidencePackage:
         case = self.get(case_id)
         with self._connect() as connection:
             self._append_audit_event(
@@ -775,7 +1089,7 @@ class CaseStore:
                 case_id,
                 "evidence_exported",
                 {"package_version": "evidence-package-v1", "synthetic": True},
-                actor=requested_by,
+                actor=actor.display_name,
             )
         return EvidencePackage(
             generated_at=datetime.now(timezone.utc),
@@ -790,19 +1104,52 @@ app = FastAPI(
     version="0.1.0",
     description="Synthetic-data-only FCRM assessment service. Human decision authority is mandatory.",
 )
-case_store = CaseStore()
+case_store = CaseStore(
+    database_path=os.getenv("RAW_DATABASE_PATH", "raw.db"),
+    database_url=os.getenv("DATABASE_URL"),
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "PUT"],
+    allow_headers=["Content-Type", "X-Actor-Id"],
 )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
 def health() -> HealthResponse:
     return HealthResponse(timestamp=datetime.now(timezone.utc))
+
+
+@app.get("/api/v1/operations/metrics", response_model=OperationsMetrics, tags=["operations"])
+def get_operations_metrics(
+    actor: Annotated[Actor, Depends(require_roles(Role.AUDITOR, Role.ADMINISTRATOR))]
+) -> OperationsMetrics:
+    return case_store.operations_metrics()
+
+
+@app.get("/api/v1/risk-configurations/active", response_model=RiskConfiguration, tags=["risk"])
+def get_active_risk_configuration() -> RiskConfiguration:
+    return case_store.active_risk_configuration()
+
+
+@app.get("/api/v1/actors", response_model=list[Actor], tags=["identity"])
+def list_demo_actors() -> list[Actor]:
+    return list(DEMO_ACTORS.values())
+
+
+@app.put("/api/v1/risk-configurations/active", response_model=RiskConfiguration, tags=["risk"])
+def update_active_risk_configuration(
+    request: RiskConfigurationUpdateRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.ADMINISTRATOR))],
+) -> RiskConfiguration:
+    return case_store.activate_risk_configuration(request, actor)
+
+
+@app.get("/api/v1/policy-sources", response_model=list[PolicySource], tags=["policy"])
+def list_policy_sources() -> list[PolicySource]:
+    return case_store.policy_sources()
 
 
 @app.get("/api/v1/cases", response_model=list[CaseSummary], tags=["cases"])
@@ -816,7 +1163,11 @@ def list_cases() -> list[CaseSummary]:
     status_code=status.HTTP_201_CREATED,
     tags=["cases"],
 )
-def create_case(intake: IntakeRequest) -> CaseDetail:
+def create_case(
+    intake: IntakeRequest, actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER))]
+) -> CaseDetail:
+    if intake.business_owner != actor.display_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only submit their own cases.")
     return case_store.create(intake)
 
 
@@ -826,33 +1177,66 @@ def get_case(case_id: str) -> CaseDetail:
 
 
 @app.post("/api/v1/cases/{case_id}/submit", response_model=CaseDetail, tags=["cases"])
-def submit_case(case_id: str) -> CaseDetail:
+def submit_case(
+    case_id: str, actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER))]
+) -> CaseDetail:
+    case = case_store.get(case_id)
+    if case.intake.business_owner != actor.display_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only submit their own cases.")
     return case_store.submit(case_id)
 
 
+@app.put("/api/v1/cases/{case_id}/intake", response_model=CaseDetail, tags=["cases"])
+def update_case_intake(
+    case_id: str,
+    intake: IntakeRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER))],
+) -> CaseDetail:
+    case = case_store.get(case_id)
+    if case.intake.business_owner != actor.display_name or intake.business_owner != actor.display_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only update their own cases.")
+    return case_store.update_draft_intake(case_id, intake)
+
+
 @app.post("/api/v1/cases/{case_id}/risk-assessment", response_model=CaseDetail, tags=["risk"])
-def assess_case_risk(case_id: str, request: RiskAssessmentRequest) -> CaseDetail:
-    return case_store.assess_risk(case_id, request)
+def assess_case_risk(
+    case_id: str,
+    request: RiskAssessmentRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.ANALYST))],
+) -> CaseDetail:
+    return case_store.assess_risk(case_id, request, actor)
 
 
 @app.post("/api/v1/cases/{case_id}/assessment-draft", response_model=CaseDetail, tags=["ai"])
-def create_assessment_draft(case_id: str) -> CaseDetail:
+def create_assessment_draft(
+    case_id: str, actor: Annotated[Actor, Depends(require_roles(Role.ANALYST))]
+) -> CaseDetail:
     return case_store.draft_assessment(case_id)
 
 
 @app.post("/api/v1/cases/{case_id}/risk-override", response_model=CaseDetail, tags=["analyst"])
-def override_case_risk(case_id: str, request: AnalystOverrideRequest) -> CaseDetail:
-    return case_store.override_risk(case_id, request)
+def override_case_risk(
+    case_id: str,
+    request: AnalystOverrideRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.ANALYST))],
+) -> CaseDetail:
+    return case_store.override_risk(case_id, request, actor)
 
 
 @app.post("/api/v1/cases/{case_id}/send-to-committee", response_model=CaseDetail, tags=["analyst"])
-def send_case_to_committee(case_id: str, analyst: str = "FCRM Analyst") -> CaseDetail:
-    return case_store.send_to_committee(case_id, analyst)
+def send_case_to_committee(
+    case_id: str, actor: Annotated[Actor, Depends(require_roles(Role.ANALYST))]
+) -> CaseDetail:
+    return case_store.send_to_committee(case_id, actor)
 
 
 @app.post("/api/v1/cases/{case_id}/committee-decision", response_model=CaseDetail, tags=["committee"])
-def record_committee_decision(case_id: str, request: CommitteeDecisionRequest) -> CaseDetail:
-    return case_store.decide(case_id, request)
+def record_committee_decision(
+    case_id: str,
+    request: CommitteeDecisionRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.COMMITTEE_MEMBER))],
+) -> CaseDetail:
+    return case_store.decide(case_id, request, actor)
 
 
 @app.post(
@@ -861,9 +1245,12 @@ def record_committee_decision(case_id: str, request: CommitteeDecisionRequest) -
     tags=["committee"],
 )
 def verify_committee_condition(
-    case_id: str, condition_id: str, request: ConditionVerificationRequest
+    case_id: str,
+    condition_id: str,
+    request: ConditionVerificationRequest,
+    actor: Annotated[Actor, Depends(require_roles(Role.ANALYST))],
 ) -> CaseDetail:
-    return case_store.verify_condition(case_id, condition_id, request)
+    return case_store.verify_condition(case_id, condition_id, request, actor)
 
 
 @app.get("/api/v1/cases/{case_id}/audit-events", response_model=list[AuditEvent], tags=["audit"])
@@ -877,5 +1264,7 @@ def verify_audit_events(case_id: str) -> AuditVerification:
 
 
 @app.get("/api/v1/cases/{case_id}/evidence-package", response_model=EvidencePackage, tags=["audit"])
-def export_evidence_package(case_id: str, requested_by: str = "examiner") -> EvidencePackage:
-    return case_store.evidence_package(case_id, requested_by)
+def export_evidence_package(
+    case_id: str, actor: Annotated[Actor, Depends(require_roles(Role.AUDITOR, Role.ANALYST, Role.COMMITTEE_MEMBER))]
+) -> EvidencePackage:
+    return case_store.evidence_package(case_id, actor)

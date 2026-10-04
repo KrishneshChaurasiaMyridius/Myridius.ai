@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://raw:raw@db:5432/raw
+      DATABASE_URL: postgresql://raw:raw@db:5432/raw
     depends_on:
       db:
         condition: service_healthy

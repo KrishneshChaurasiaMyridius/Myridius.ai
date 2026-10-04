@@ -1,11 +1,21 @@
 from datetime import datetime, timedelta, timezone
+import os
+from pathlib import Path
+from tempfile import gettempdir
 
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("RAW_DATABASE_PATH", str(Path(gettempdir()) / "myridius-api-tests.db"))
 
 from app.main import app, case_store
 
 
-client = TestClient(app)
+PRODUCT_OWNER_HEADERS = {"X-Actor-Id": "product-owner"}
+ANALYST_HEADERS = {"X-Actor-Id": "analyst"}
+COMMITTEE_HEADERS = {"X-Actor-Id": "committee"}
+AUDITOR_HEADERS = {"X-Actor-Id": "auditor"}
+ADMINISTRATOR_HEADERS = {"X-Actor-Id": "administrator"}
+client = TestClient(app, headers=PRODUCT_OWNER_HEADERS)
 
 
 def valid_intake() -> dict[str, object]:
@@ -74,6 +84,20 @@ def test_cannot_submit_twice() -> None:
     assert response.status_code == 409
 
 
+def test_product_owner_can_update_a_draft_with_versioned_history() -> None:
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    revised_intake = valid_intake()
+    revised_intake["title"] = "Synthetic revised cross-border payments feature"
+
+    updated = client.put(f"/api/v1/cases/{created['case_id']}/intake", json=revised_intake)
+
+    assert updated.status_code == 200
+    assert updated.json()["title"] == revised_intake["title"]
+    assert updated.json()["version"] == 2
+    events = client.get(f"/api/v1/cases/{created['case_id']}/audit-events").json()
+    assert [event["action"] for event in events] == ["case_created", "draft_intake_updated"]
+
+
 def test_case_events_form_a_hash_linked_audit_trail() -> None:
     created = client.post("/api/v1/cases", json=valid_intake()).json()
     client.post(f"/api/v1/cases/{created['case_id']}/submit")
@@ -109,7 +133,7 @@ def test_deterministic_scoring_and_human_decision_lifecycle() -> None:
     case_id = created["case_id"]
     client.post(f"/api/v1/cases/{case_id}/submit")
 
-    assessed = client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment())
+    assessed = client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
 
     assert assessed.status_code == 200
     case = assessed.json()
@@ -125,11 +149,12 @@ def test_deterministic_scoring_and_human_decision_lifecycle() -> None:
             "rationale": "Cross-border launch uncertainty warrants a higher residual-risk rating for committee review.",
             "analyst": "Alex FCRM Analyst",
         },
+        headers=ANALYST_HEADERS,
     )
     assert override.status_code == 200
     assert override.json()["analyst_override"]["residual_risk"] == 4
 
-    committee_ready = client.post(f"/api/v1/cases/{case_id}/send-to-committee")
+    committee_ready = client.post(f"/api/v1/cases/{case_id}/send-to-committee", headers=ANALYST_HEADERS)
     assert committee_ready.status_code == 200
     assert committee_ready.json()["status"] == "committee_decision"
 
@@ -148,6 +173,7 @@ def test_deterministic_scoring_and_human_decision_lifecycle() -> None:
                 }
             ],
         },
+        headers=COMMITTEE_HEADERS,
     )
     assert decision.status_code == 200
     assert decision.json()["status"] == "decided"
@@ -161,6 +187,7 @@ def test_deterministic_scoring_and_human_decision_lifecycle() -> None:
             "verifier": "Alex FCRM Analyst",
             "evidence_summary": "Reviewed the test report confirming sanctions coverage for GB and US payment routes.",
         },
+        headers=ANALYST_HEADERS,
     )
     assert verified.status_code == 200
     assert verified.json()["committee_decision"]["conditions"][0]["status"] == "verified"
@@ -195,26 +222,94 @@ def test_controls_cannot_eliminate_residual_risk() -> None:
         }
     )
 
-    response = client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=assessment)
+    response = client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=assessment, headers=ANALYST_HEADERS)
 
     assert response.status_code == 200
     assert response.json()["residual_risk"] == 1
+
+
+def test_versioned_risk_configuration_is_immutable_and_snapshotted() -> None:
+    configuration = client.put(
+        "/api/v1/risk-configurations/active",
+        json={
+            "version": "risk-config-v2",
+            "factor_weights": {
+                "customer": 1,
+                "product": 2,
+                "channel": 1,
+                "geography": 1,
+                "transaction": 2,
+                "third_party": 1,
+            },
+            "control_mitigation_divisor": 5,
+            "low_risk_maximum": 2,
+            "moderate_risk_maximum": 3,
+            "updated_by": "Morgan Committee Member",
+        },
+        headers=ADMINISTRATOR_HEADERS,
+    )
+    assert configuration.status_code == 200
+    assert configuration.json()["version"] == "risk-config-v2"
+
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    client.post(f"/api/v1/cases/{created['case_id']}/submit")
+    assessed = client.post(
+        f"/api/v1/cases/{created['case_id']}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS
+    )
+
+    assert assessed.status_code == 200
+    assert assessed.json()["risk_assessment"]["configuration_version"] == "risk-config-v2"
+    assert assessed.json()["risk_assessment"]["configuration_snapshot"]["factor_weights"]["product"] == 2
+
+    duplicate = client.put(
+        "/api/v1/risk-configurations/active",
+        json={**configuration.json(), "updated_by": "Another Administrator"},
+        headers=ADMINISTRATOR_HEADERS,
+    )
+    assert duplicate.status_code == 409
 
 
 def test_assessment_draft_is_cited_and_does_not_make_a_decision() -> None:
     created = client.post("/api/v1/cases", json=valid_intake()).json()
     case_id = created["case_id"]
     client.post(f"/api/v1/cases/{case_id}/submit")
-    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment())
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
 
-    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft")
+    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
 
     assert response.status_code == 200
     case = response.json()
     assert case["status"] == "analyst_review"
     assert case["assessment_draft"]["decision_authority"] == "human_only"
     assert len(case["assessment_draft"]["citations"]) == 2
+    assert case["assessment_draft"]["retrieval_query"] == "product feature risk assessment and control governance"
+    assert all(citation["source_id"].startswith(("FATF-", "RAW-")) for citation in case["assessment_draft"]["citations"])
     assert case["committee_decision"] is None
+
+
+def test_policy_source_register_contains_approved_synthetic_sources() -> None:
+    response = client.get("/api/v1/policy-sources")
+
+    assert response.status_code == 200
+    assert {source["source_id"] for source in response.json()} == {
+        "FATF-RBA-2014-1",
+        "RAW-SYNTHETIC-POLICY-01",
+    }
+    assert all(source["approved"] and source["synthetic_data"] for source in response.json())
+
+
+def test_operations_metrics_expose_workflow_and_audit_health() -> None:
+    client.post("/api/v1/cases", json=valid_intake())
+
+    response = client.get("/api/v1/operations/metrics", headers=AUDITOR_HEADERS)
+
+    assert response.status_code == 200
+    metrics = response.json()
+    assert metrics["cases_by_status"]["draft"] == 1
+    assert metrics["audit_event_count"] == 1
+    assert metrics["invalid_audit_chain_count"] == 0
+    assert metrics["active_risk_configuration"] == "risk-config-v1"
+    assert metrics["policy_source_count"] == 2
 
 
 def test_committee_cannot_decide_before_analyst_review() -> None:
@@ -228,6 +323,7 @@ def test_committee_cannot_decide_before_analyst_review() -> None:
             "committee_member": "Morgan Committee Member",
             "conditions": [],
         },
+        headers=COMMITTEE_HEADERS,
     )
 
     assert response.status_code == 409
@@ -237,9 +333,9 @@ def test_evidence_package_contains_case_and_verified_audit_trail() -> None:
     created = client.post("/api/v1/cases", json=valid_intake()).json()
     case_id = created["case_id"]
     client.post(f"/api/v1/cases/{case_id}/submit")
-    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment())
-    client.post(f"/api/v1/cases/{case_id}/assessment-draft")
-    client.post(f"/api/v1/cases/{case_id}/send-to-committee")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    client.post(f"/api/v1/cases/{case_id}/send-to-committee", headers=ANALYST_HEADERS)
     client.post(
         f"/api/v1/cases/{case_id}/committee-decision",
         json={
@@ -255,9 +351,10 @@ def test_evidence_package_contains_case_and_verified_audit_trail() -> None:
                 }
             ],
         },
+        headers=COMMITTEE_HEADERS,
     )
 
-    response = client.get(f"/api/v1/cases/{case_id}/evidence-package?requested_by=Examiner")
+    response = client.get(f"/api/v1/cases/{case_id}/evidence-package", headers=AUDITOR_HEADERS)
 
     assert response.status_code == 200
     package = response.json()
@@ -265,3 +362,12 @@ def test_evidence_package_contains_case_and_verified_audit_trail() -> None:
     assert package["case"]["committee_decision"]["decision"] == "approve_with_conditions"
     assert package["audit_verification"]["valid"] is True
     assert package["audit_events"][-1]["action"] == "evidence_exported"
+
+
+def test_product_owner_cannot_assess_risk() -> None:
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    client.post(f"/api/v1/cases/{created['case_id']}/submit")
+
+    response = client.post(f"/api/v1/cases/{created['case_id']}/risk-assessment", json=risk_assessment())
+
+    assert response.status_code == 403

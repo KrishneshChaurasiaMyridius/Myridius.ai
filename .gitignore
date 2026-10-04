@@ -1,5 +1,6 @@
 .env
 .venv/
+raw.db
 __pycache__/
 *.py[cod]
 node_modules/
