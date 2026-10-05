@@ -65,6 +65,7 @@ def run() -> dict[str, object]:
         },
     )
     drafted = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    ai_executions = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS)
     sent_to_committee = client.post(f"/api/v1/cases/{case_id}/send-to-committee", headers=ANALYST_HEADERS)
     decided = client.post(
         f"/api/v1/cases/{case_id}/committee-decision",
@@ -93,6 +94,10 @@ def run() -> dict[str, object]:
         ],
         "residual_risk_floor_respected": assessed.json()["residual_risk"] >= 1,
         "citation_count": len(drafted.json()["assessment_draft"]["citations"]),
+        "ai_execution_recorded": ai_executions.status_code == 200 and len(ai_executions.json()) == 1,
+        "estimated_ai_tokens": sum(
+            ai_executions.json()[0][field] for field in ("estimated_input_tokens", "estimated_output_tokens")
+        ) if ai_executions.status_code == 200 and ai_executions.json() else 0,
         "human_only_decision_authority": drafted.json()["assessment_draft"]["decision_authority"] == "human_only",
         "audit_chain_valid": package["audit_verification"]["valid"],
         "unauthorized_transition_status": unauthorized.status_code,
@@ -101,6 +106,8 @@ def run() -> dict[str, object]:
         result["workflow_status_codes"] == [201, 200, 200, 200, 200, 200, 200]
         and result["residual_risk_floor_respected"]
         and result["citation_count"] >= 1
+        and result["ai_execution_recorded"]
+        and result["estimated_ai_tokens"] > 0
         and result["human_only_decision_authority"]
         and result["audit_chain_valid"]
         and result["unauthorized_transition_status"] == 403

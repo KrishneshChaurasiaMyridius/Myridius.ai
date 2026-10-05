@@ -15,6 +15,7 @@ jobs:
           python-version: '3.13'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r apps/api/requirements.txt
+      - run: DATABASE_URL=sqlite:///${{ runner.temp }}/raw-migration-test.db alembic -c apps/api/alembic.ini upgrade head
       - run: python -m pytest apps/api/tests -q
       - run: python evals/run_workflow_evaluation.py
       - run: python -m pip install pip-audit

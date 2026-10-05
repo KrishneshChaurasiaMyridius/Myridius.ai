@@ -8,6 +8,8 @@ The workbench prepares an assessment; authorised humans make every risk and appr
 
 The `assessment-draft` API is a deterministic mock adapter. It produces a review-only summary, analyst questions and visible citations. Its response carries `decision_authority: human_only` and it cannot alter a case status, risk configuration or committee outcome.
 
+Every completed draft also records an immutable execution ledger entry containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, duration, and completion time. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
+
 | Stage | System action | Human gate |
 | --- | --- | --- |
 | Intake | Validates required synthetic-data fields | Product owner submits the request |

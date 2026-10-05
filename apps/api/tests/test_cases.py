@@ -84,6 +84,27 @@ def test_cannot_submit_twice() -> None:
     assert response.status_code == 409
 
 
+def test_workflow_handoffs_create_role_scoped_notifications() -> None:
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+
+    analyst_notifications = client.get("/api/v1/notifications", headers=ANALYST_HEADERS)
+    assert analyst_notifications.status_code == 200
+    assert analyst_notifications.json()[0]["action"] == "case_submitted"
+    assert analyst_notifications.json()[0]["case_id"] == case_id
+
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    assert client.get("/api/v1/notifications", headers=COMMITTEE_HEADERS).json() == []
+    client.post(f"/api/v1/cases/{case_id}/send-to-committee", headers=ANALYST_HEADERS)
+    committee_notifications = client.get("/api/v1/notifications", headers=COMMITTEE_HEADERS)
+    notification = committee_notifications.json()[0]
+    assert notification["action"] == "sent_to_committee"
+    acknowledged = client.post(f"/api/v1/notifications/{notification['notification_id']}/read", headers=COMMITTEE_HEADERS)
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["read_at"] is not None
+
+
 def test_product_owner_can_update_a_draft_with_versioned_history() -> None:
     created = client.post("/api/v1/cases", json=valid_intake()).json()
     revised_intake = valid_intake()
@@ -310,6 +331,14 @@ def test_assessment_draft_is_cited_and_does_not_make_a_decision() -> None:
     assert case["assessment_draft"]["retrieval_query"] == "product feature risk assessment and control governance"
     assert all(citation["source_id"].startswith(("FATF-", "RAW-")) for citation in case["assessment_draft"]["citations"])
     assert case["committee_decision"] is None
+    executions = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS)
+    assert executions.status_code == 200
+    execution = executions.json()[0]
+    assert execution["execution_id"] == case["assessment_draft"]["execution_id"]
+    assert execution["prompt_version"] == "assessment-draft-v1"
+    assert execution["citation_count"] == len(case["assessment_draft"]["citations"])
+    assert execution["estimated_input_tokens"] > 0
+    assert execution["estimated_output_tokens"] > 0
 
 
 def test_policy_source_register_contains_approved_synthetic_sources() -> None:
@@ -356,6 +385,8 @@ def test_operations_metrics_expose_workflow_and_audit_health() -> None:
     assert metrics["invalid_audit_chain_count"] == 0
     assert metrics["active_risk_configuration"] == "risk-config-v1"
     assert metrics["policy_source_count"] == 2
+    assert metrics["ai_execution_count"] == 0
+    assert metrics["estimated_ai_tokens"] == 0
 
 
 def test_committee_cannot_decide_before_analyst_review() -> None:

@@ -149,6 +149,8 @@ class OperationsMetrics(BaseModel):
     invalid_audit_chain_count: int
     active_risk_configuration: str
     policy_source_count: int
+    ai_execution_count: int
+    estimated_ai_tokens: int
 
 
 class CaseSummary(BaseModel):
@@ -290,7 +292,24 @@ class AssessmentDraft(BaseModel):
     retrieval_query: str = ""
     prepared_at: datetime
     generator: str = "deterministic-mock-v1"
+    prompt_version: str = "assessment-draft-v1"
+    execution_id: str
     decision_authority: Literal["human_only"] = "human_only"
+
+
+class AIExecution(BaseModel):
+    execution_id: str
+    case_id: str
+    adapter: str
+    prompt_version: str
+    retrieval_query: str
+    evidence_document_count: int = Field(ge=0)
+    citation_count: int = Field(ge=0)
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_output_tokens: int = Field(ge=0)
+    duration_ms: int = Field(ge=0)
+    status: Literal["completed"] = "completed"
+    completed_at: datetime
 
 
 class AnalystOverride(BaseModel):
@@ -379,6 +398,16 @@ class AuditVerification(BaseModel):
     case_id: str
     event_count: int
     valid: bool
+
+
+class WorkflowNotification(BaseModel):
+    notification_id: str
+    case_id: str
+    recipient_role: Role
+    action: str
+    message: str
+    created_at: datetime
+    read_at: datetime | None = None
 
 
 class EvidencePackage(BaseModel):
@@ -474,6 +503,28 @@ class CaseStore:
                     document_id TEXT PRIMARY KEY,
                     case_id TEXT NOT NULL,
                     document_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_notifications (
+                    notification_id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    recipient_role TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    read_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_executions (
+                    execution_id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    execution_json TEXT NOT NULL
                 )
                 """
             )
@@ -635,6 +686,8 @@ class CaseStore:
                 invalid_audit_chain_count += 1
         with self._connect() as connection:
             audit_event_count = connection.execute("SELECT COUNT(*) AS count FROM audit_events").fetchone()["count"]
+            ai_rows = connection.execute("SELECT execution_json FROM ai_executions").fetchall()
+        executions = [AIExecution.model_validate_json(row["execution_json"]) for row in ai_rows]
         return OperationsMetrics(
             generated_at=datetime.now(timezone.utc),
             cases_by_status=cases_by_status,
@@ -642,6 +695,10 @@ class CaseStore:
             invalid_audit_chain_count=invalid_audit_chain_count,
             active_risk_configuration=self.active_risk_configuration().version,
             policy_source_count=len(self.policy_sources()),
+            ai_execution_count=len(executions),
+            estimated_ai_tokens=sum(
+                execution.estimated_input_tokens + execution.estimated_output_tokens for execution in executions
+            ),
         )
 
     def retrieve_policy_sources(self, topics: set[str]) -> list[PolicyCitation]:
@@ -693,6 +750,8 @@ class CaseStore:
         default_configuration = self._default_risk_configuration()
         with self._connect() as connection:
             connection.execute("DELETE FROM audit_events")
+            connection.execute("DELETE FROM workflow_notifications")
+            connection.execute("DELETE FROM ai_executions")
             connection.execute("DELETE FROM cases")
             connection.execute("DELETE FROM risk_configurations")
             connection.execute("DELETE FROM policy_audit_events")
@@ -772,6 +831,54 @@ class CaseStore:
                 "SELECT document_json FROM evidence_documents WHERE case_id = ? ORDER BY document_id", (case_id,)
             ).fetchall()
         return [DocumentEvidence.model_validate_json(row["document_json"]) for row in rows]
+
+    def ai_executions(self, case_id: str) -> list[AIExecution]:
+        self.get(case_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT execution_json FROM ai_executions WHERE case_id = ? ORDER BY execution_id", (case_id,)
+            ).fetchall()
+        return [AIExecution.model_validate_json(row["execution_json"]) for row in rows]
+
+    @staticmethod
+    def _notify(
+        connection: StoreConnection, case_id: str, recipient_role: Role, action: str, message: str
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO workflow_notifications (
+                notification_id, case_id, recipient_role, action, message, created_at, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid4()), case_id, recipient_role, action, message, datetime.now(timezone.utc).isoformat(), None),
+        )
+
+    def notifications(self, actor: Actor) -> list[WorkflowNotification]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM workflow_notifications WHERE recipient_role = ? ORDER BY created_at DESC, notification_id DESC",
+                (actor.role,),
+            ).fetchall()
+        return [WorkflowNotification(**dict(row)) for row in rows]
+
+    def mark_notification_read(self, notification_id: str, actor: Actor) -> WorkflowNotification:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM workflow_notifications WHERE notification_id = ?", (notification_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow notification not found.")
+            notification = WorkflowNotification(**dict(row))
+            if notification.recipient_role is not actor.role:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Notification belongs to another role inbox.")
+            if notification.read_at is None:
+                read_at = datetime.now(timezone.utc)
+                connection.execute(
+                    "UPDATE workflow_notifications SET read_at = ? WHERE notification_id = ?",
+                    (read_at.isoformat(), notification_id),
+                )
+                notification = notification.model_copy(update={"read_at": read_at})
+        return notification
 
     @staticmethod
     def _hash_event(
@@ -930,6 +1037,13 @@ class CaseStore:
                 "case_submitted",
                 {"from_status": case.status, "to_status": submitted.status, "version": submitted.version},
                 actor=case.intake.business_owner,
+            )
+            self._notify(
+                connection,
+                case_id,
+                Role.ANALYST,
+                "case_submitted",
+                f"{case.title} is ready for intake risk assessment.",
             )
         return submitted
 
@@ -1101,12 +1215,26 @@ class CaseStore:
             f"indicators={', '.join(evidence.risk_indicators) or 'none'}"
             for evidence in case.document_evidence
         ]
+        summary = (
+            f"The proposed {case.change_type.replace('_', ' ')} change has an inherent risk score of "
+            f"{assessment.inherent_risk}/5 and a residual risk score of {case.residual_risk}/5. "
+            f"The case requires analyst confirmation before committee review."
+        )
+        execution = AIExecution(
+            execution_id=str(uuid4()),
+            case_id=case_id,
+            adapter="deterministic-mock-v1",
+            prompt_version="assessment-draft-v1",
+            retrieval_query=retrieval_query,
+            evidence_document_count=len(case.document_evidence),
+            citation_count=len(citations),
+            estimated_input_tokens=max(1, math.ceil((len(retrieval_query) + sum(len(item) for item in evidence_context)) / 4)),
+            estimated_output_tokens=max(1, math.ceil(len(summary) / 4)),
+            duration_ms=0,
+            completed_at=datetime.now(timezone.utc),
+        )
         draft = AssessmentDraft(
-            summary=(
-                f"The proposed {case.change_type.replace('_', ' ')} change has an inherent risk score of "
-                f"{assessment.inherent_risk}/5 and a residual risk score of {case.residual_risk}/5. "
-                f"The case requires analyst confirmation before committee review."
-            ),
+            summary=summary,
             analyst_questions=[
                 "Confirm that sanctions screening covers all stated jurisdictions before launch.",
                 "Validate the operating effectiveness evidence for the proposed transaction monitoring control.",
@@ -1116,6 +1244,7 @@ class CaseStore:
             evidence_context=evidence_context,
             retrieval_query=retrieval_query,
             prepared_at=datetime.now(timezone.utc),
+            execution_id=execution.execution_id,
         )
         updated = case.model_copy(update={"assessment_draft": draft, "version": case.version + 1})
         with self._connect() as connection:
@@ -1123,12 +1252,18 @@ class CaseStore:
                 "UPDATE cases SET version = ?, assessment_draft_json = ? WHERE case_id = ?",
                 (updated.version, draft.model_dump_json(), case_id),
             )
+            connection.execute(
+                "INSERT INTO ai_executions (execution_id, case_id, execution_json) VALUES (?, ?, ?)",
+                (execution.execution_id, case_id, execution.model_dump_json()),
+            )
             self._append_audit_event(
                 connection,
                 case_id,
                 "assessment_drafted",
                 {
                     "generator": draft.generator,
+                    "execution_id": execution.execution_id,
+                    "prompt_version": execution.prompt_version,
                     "retrieval_query": retrieval_query,
                     "citation_ids": [citation.source_id for citation in citations],
                     "evidence_document_ids": draft.evidence_document_ids,
@@ -1155,6 +1290,13 @@ class CaseStore:
                 "sent_to_committee",
                 {"residual_risk": updated.residual_risk, "version": updated.version},
                 actor=actor.display_name,
+            )
+            self._notify(
+                connection,
+                case_id,
+                Role.COMMITTEE_MEMBER,
+                "sent_to_committee",
+                f"{case.title} is ready for a human committee decision.",
             )
         return updated
 
@@ -1190,6 +1332,13 @@ class CaseStore:
                     "version": updated.version,
                 },
                 actor=actor.display_name,
+            )
+            self._notify(
+                connection,
+                case_id,
+                Role.PRODUCT_OWNER,
+                "committee_decided",
+                f"A committee decision has been recorded for {case.title}.",
             )
         return updated
 
@@ -1329,6 +1478,18 @@ def list_demo_actors() -> list[Actor]:
     return list(DEMO_ACTORS.values())
 
 
+@app.get("/api/v1/notifications", response_model=list[WorkflowNotification], tags=["workflow"])
+def list_notifications(actor: Annotated[Actor, Depends(current_actor)]) -> list[WorkflowNotification]:
+    return case_store.notifications(actor)
+
+
+@app.post("/api/v1/notifications/{notification_id}/read", response_model=WorkflowNotification, tags=["workflow"])
+def acknowledge_notification(
+    notification_id: str, actor: Annotated[Actor, Depends(current_actor)]
+) -> WorkflowNotification:
+    return case_store.mark_notification_read(notification_id, actor)
+
+
 @app.put("/api/v1/risk-configurations/active", response_model=RiskConfiguration, tags=["risk"])
 def update_active_risk_configuration(
     request: RiskConfigurationUpdateRequest,
@@ -1436,6 +1597,13 @@ def create_assessment_draft(
     case_id: str, actor: Annotated[Actor, Depends(require_roles(Role.ANALYST))]
 ) -> CaseDetail:
     return case_store.draft_assessment(case_id)
+
+
+@app.get("/api/v1/cases/{case_id}/ai-executions", response_model=list[AIExecution], tags=["ai"])
+def list_ai_executions(
+    case_id: str, actor: Annotated[Actor, Depends(require_roles(Role.ANALYST, Role.AUDITOR, Role.COMMITTEE_MEMBER))]
+) -> list[AIExecution]:
+    return case_store.ai_executions(case_id)
 
 
 @app.post("/api/v1/cases/{case_id}/risk-override", response_model=CaseDetail, tags=["analyst"])

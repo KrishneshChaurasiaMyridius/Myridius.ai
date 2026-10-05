@@ -24,6 +24,16 @@ h2 { font-size: 1.5rem; font-weight: 500; }
 .environment { background: #d7f0e6; color: #075139; padding: 7px 10px; font: 700 .7rem ui-monospace, monospace; letter-spacing: .06em; }
 .demo-bar { align-items: center; background: #e7efec; border-bottom: 1px solid var(--line); display: flex; font-family: ui-monospace, monospace; font-size: .8rem; gap: 18px; justify-content: space-between; margin-top: 20px; padding: 12px 16px; }
 .demo-bar button { background: var(--ink); padding: 9px 12px; }
+.inbox { background: var(--surface); border-left: 6px solid var(--amber); display: grid; gap: 14px; grid-template-columns: minmax(180px, .55fr) minmax(0, 1.45fr); margin-top: 20px; padding: 18px 22px; }
+.inbox h2 { margin-bottom: 0; }
+.inbox ul { list-style: none; margin: 0; padding: 0; }
+.inbox li { align-items: center; border-bottom: 1px solid var(--line); display: flex; gap: 14px; justify-content: space-between; margin: 0; padding: 10px 0; }
+.inbox li:last-child { border-bottom: 0; }
+.inbox li.unread { color: var(--ink); }
+.inbox li.read { color: var(--muted); }
+.inbox strong, .inbox span { display: block; }
+.inbox span, .inbox small { font: .7rem ui-monospace, monospace; margin-top: 4px; }
+.inbox button { background: var(--amber); flex: 0 0 auto; font-size: .72rem; padding: 8px 10px; }
 .configuration { background: var(--surface); border-left: 6px solid var(--teal); display: flex; gap: 28px; justify-content: space-between; margin-top: 24px; padding: 22px 24px; }
 .configuration h2 { margin-bottom: 6px; }
 .configuration dl { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(160px, 1fr)); margin: 0; }
@@ -112,4 +122,4 @@ button:disabled { cursor: wait; opacity: .55; }
 .timeline strong, .timeline span { display: block; }
 .timeline span { color: var(--muted); font: .7rem ui-monospace, monospace; margin-top: 4px; text-transform: none; }
 li { margin: 0 0 13px; line-height: 1.4; }
-@media (max-width: 720px) { main { padding: 25px 16px; } .summary, .content, header, .demo-bar, .configuration { flex-direction: column; align-items: stretch; } .configuration dl, .intake-form, .risk-inputs, .condition-fields, .decision-pack, .decision-pack dl, .policy-register, .policy-form { grid-template-columns: 1fr; } .workspace { grid-template-columns: 1fr; } .workflow { grid-template-columns: 1fr; } .step { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); } .facts { grid-template-columns: 1fr; } .risk { border-left: 0; padding-left: 0; } }
+@media (max-width: 720px) { main { padding: 25px 16px; } .summary, .content, header, .demo-bar, .configuration, .inbox { flex-direction: column; align-items: stretch; } .configuration dl, .intake-form, .risk-inputs, .condition-fields, .decision-pack, .decision-pack dl, .policy-register, .policy-form, .inbox { grid-template-columns: 1fr; } .workspace { grid-template-columns: 1fr; } .workflow { grid-template-columns: 1fr; } .step { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); } .facts { grid-template-columns: 1fr; } .risk { border-left: 0; padding-left: 0; } .inbox li { align-items: flex-start; flex-direction: column; } }

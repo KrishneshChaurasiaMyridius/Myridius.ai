@@ -23,7 +23,7 @@ The first end-to-end slice supports a synthetic change request from product-owne
 3. For a no-Docker API demo, run `C:\Python313\python.exe -m uvicorn app.main:app --reload --port 8000` from `apps/api`.
 4. The API is available at `http://localhost:8000/health` and API documentation at `http://localhost:8000/docs`.
 
-The no-Docker API uses `raw.db`, a SQLite demo database with append-only audit events. It is excluded from source control. Container deployments use PostgreSQL through `DATABASE_URL`.
+The no-Docker API uses `raw.db`, a SQLite demo database with append-only audit events. It is excluded from source control. Container deployments use PostgreSQL through `DATABASE_URL`; the API container runs `alembic upgrade head` before it accepts traffic. Run the same command manually from `apps/api` after setting `DATABASE_URL` for controlled deployments.
 
 ## Synthetic demo identities
 
@@ -33,7 +33,7 @@ The workbench exposes synthetic identities to demonstrate role-based access cont
 
 GitHub Actions runs the API workflow test suite, Python dependency audit, web type check and high-severity npm audit on pushes and pull requests.
 
-Run the repeatable synthetic end-to-end governance evaluation with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It verifies deterministic workflow progression, human-only draft authority, citation availability, residual-risk floor enforcement, audit-chain integrity and a denied unauthorized transition.
+Run the repeatable synthetic end-to-end governance evaluation with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It verifies deterministic workflow progression, human-only draft authority, citation availability, persisted AI execution telemetry with estimated token usage, residual-risk floor enforcement, audit-chain integrity and a denied unauthorized transition.
 
 ## Repository layout
 
