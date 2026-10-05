@@ -56,6 +56,17 @@ def test_create_then_submit_case() -> None:
     assert submitted.json()["submitted_at"] is not None
 
 
+def test_api_responses_include_a_correlation_id() -> None:
+    request_id = "workflow-trace-123"
+
+    health = client.get("/health", headers={"X-Request-Id": request_id})
+    denied = client.post("/api/v1/cases", json=valid_intake(), headers=ANALYST_HEADERS)
+
+    assert health.headers["X-Request-Id"] == request_id
+    assert denied.status_code == 403
+    assert denied.headers["X-Request-Id"]
+
+
 def test_rejects_non_synthetic_data() -> None:
     intake = valid_intake()
     intake["is_synthetic"] = False

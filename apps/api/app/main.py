@@ -4,15 +4,20 @@ from datetime import datetime, timezone
 from enum import StrEnum
 import hashlib
 import json
+import logging
 import math
 import os
 import sqlite3
+from time import perf_counter
 from typing import Annotated, Any, Callable, Literal, Sequence
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl, ValidationInfo, field_validator, model_validator
+
+
+LOGGER = logging.getLogger("risk_assessment_api")
 
 
 class StoreConnection:
@@ -1452,8 +1457,31 @@ app.add_middleware(
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["Content-Type", "X-Actor-Id"],
+    allow_headers=["Content-Type", "X-Actor-Id", "X-Request-Id"],
+    expose_headers=["X-Request-Id"],
 )
+
+
+@app.middleware("http")
+async def correlate_request(request: Request, call_next: Callable[..., Any]) -> Any:
+    supplied_request_id = request.headers.get("X-Request-Id", "")
+    request_id = supplied_request_id if supplied_request_id.replace("-", "").isalnum() and len(supplied_request_id) <= 128 else str(uuid4())
+    started_at = perf_counter()
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = request_id
+    LOGGER.info(
+        json.dumps(
+            {
+                "event": "http_request_completed",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": round((perf_counter() - started_at) * 1000, 2),
+            }
+        )
+    )
+    return response
 
 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])

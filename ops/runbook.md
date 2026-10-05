@@ -4,6 +4,7 @@
 
 - `GET /health` confirms that the API process is accepting requests.
 - `GET /api/v1/operations/metrics` requires an auditor or administrator actor. It reports case distribution, audit-event volume, hash-chain failures, active risk configuration and approved policy-source count.
+- Every API response includes `X-Request-Id`. Supply that header when calling the API or capture the generated value from the response, then use it to locate the JSON request-completion event in service logs.
 - A non-zero `invalid_audit_chain_count` is a stop-the-line condition: preserve the database, prevent further evidence exports and escalate to the risk-control owner.
 
 ## Local demonstration
@@ -24,4 +25,4 @@
 
 - API unavailable: check `/health`, database connectivity, then container logs.
 - Audit failure: stop evidence exports and preserve the affected database snapshot.
-- Unauthorized action: capture actor, case ID, endpoint and timestamp from logs; review the identity-provider claim mapping in production.
+- Unauthorized action: capture the `X-Request-Id`, actor, case ID, endpoint and timestamp from logs; review the identity-provider claim mapping in production.
