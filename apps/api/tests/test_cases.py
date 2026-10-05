@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import os
 from pathlib import Path
 from tempfile import gettempdir
@@ -133,12 +134,13 @@ def test_product_owner_can_update_a_draft_with_versioned_history() -> None:
 def test_synthetic_document_evidence_is_extracted_and_used_as_draft_context() -> None:
     created = client.post("/api/v1/cases", json=valid_intake()).json()
     case_id = created["case_id"]
+    content = "Synthetic GB and US cross-border third party control testing confirms sanctions screening and transaction monitoring."
     evidence = client.post(
         f"/api/v1/cases/{case_id}/document-evidence",
         json={
             "title": "Synthetic control test report",
             "document_type": "control_test",
-            "content": "Synthetic GB and US cross-border third party control testing confirms sanctions screening and transaction monitoring.",
+            "content": content,
             "source_url": "https://example.test/synthetic-control-report.pdf",
             "is_synthetic": True,
         },
@@ -146,6 +148,15 @@ def test_synthetic_document_evidence_is_extracted_and_used_as_draft_context() ->
     assert evidence.status_code == 201
     assert evidence.json()["extracted_jurisdictions"] == ["GB", "US"]
     assert evidence.json()["extracted_controls"] == ["Sanctions screening", "Transaction monitoring"]
+    assert evidence.json()["content_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    integrity = client.get(
+        f"/api/v1/cases/{case_id}/document-evidence/{evidence.json()['document_id']}/integrity",
+        headers=AUDITOR_HEADERS,
+    )
+    assert integrity.status_code == 200
+    assert integrity.json()["valid"] is True
+    events = client.get(f"/api/v1/cases/{case_id}/audit-events").json()
+    assert events[-1]["payload"]["content_sha256"] == evidence.json()["content_sha256"]
 
     client.post(f"/api/v1/cases/{case_id}/submit")
     client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
@@ -376,12 +387,20 @@ def test_administrator_can_govern_policy_source_lifecycle() -> None:
     )
 
     assert created.status_code == 201
-    assert created.json()["approved"] is True
+    assert created.json()["approved"] is False
+    approved = client.post("/api/v1/policy-sources/RAW-SYNTHETIC-POLICY-02/approve", headers=COMMITTEE_HEADERS)
+    assert approved.status_code == 200
+    assert approved.json()["approved"] is True
+    assert approved.json()["reviewed_by"] == "Morgan Committee Member"
     retired = client.post("/api/v1/policy-sources/RAW-SYNTHETIC-POLICY-02/retire", headers=ADMINISTRATOR_HEADERS)
     assert retired.status_code == 200
     assert retired.json()["approved"] is False
     audit = client.get("/api/v1/policy-sources/RAW-SYNTHETIC-POLICY-02/audit-events", headers=AUDITOR_HEADERS)
-    assert [event["action"] for event in audit.json()] == ["policy_source_added", "policy_source_retired"]
+    assert [event["action"] for event in audit.json()] == [
+        "policy_source_registered",
+        "policy_source_approved",
+        "policy_source_retired",
+    ]
 
 
 def test_operations_metrics_expose_workflow_and_audit_health() -> None:

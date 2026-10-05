@@ -177,11 +177,21 @@ class DocumentEvidenceRequest(BaseModel):
 
 class DocumentEvidence(DocumentEvidenceRequest):
     document_id: str = Field(default_factory=lambda: str(uuid4()))
+    content_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    content_size_bytes: int | None = Field(default=None, ge=0)
     extracted_jurisdictions: list[str] = Field(default_factory=list)
     extracted_controls: list[str] = Field(default_factory=list)
     risk_indicators: list[str] = Field(default_factory=list)
     extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     extracted_by: str = "deterministic-document-extractor-v1"
+
+
+class DocumentIntegrityVerification(BaseModel):
+    case_id: str
+    document_id: str
+    content_sha256: str | None
+    content_size_bytes: int | None
+    valid: bool
 
 
 class CaseDetail(CaseSummary):
@@ -268,6 +278,8 @@ class PolicySource(PolicyCitation):
     approved: bool = True
     synthetic_data: Literal[True] = True
     effective_from: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
     retired_at: datetime | None = None
     governance_owner: str = "System seed"
 
@@ -632,7 +644,7 @@ class CaseStore:
         )
 
     def add_policy_source(self, request: PolicySourceCreateRequest, actor: Actor) -> PolicySource:
-        source = PolicySource(**request.model_dump(), governance_owner=actor.display_name)
+        source = PolicySource(**request.model_dump(), approved=False, governance_owner=actor.display_name)
         with self._connect() as connection:
             existing = connection.execute(
                 "SELECT source_id FROM policy_sources WHERE source_id = ?", (source.source_id,)
@@ -644,9 +656,31 @@ class CaseStore:
                 (source.source_id, source.model_dump_json()),
             )
             self._append_policy_audit_event(
-                connection, source.source_id, "policy_source_added", {"topic": source.topic}, actor
+                connection, source.source_id, "policy_source_registered", {"topic": source.topic, "approved": False}, actor
             )
         return source
+
+    def approve_policy_source(self, source_id: str, actor: Actor) -> PolicySource:
+        with self._connect() as connection:
+            row = connection.execute("SELECT source_json FROM policy_sources WHERE source_id = ?", (source_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy source not found.")
+            source = PolicySource.model_validate_json(row["source_json"])
+            if source.retired_at:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Retired policy sources cannot be approved.")
+            if source.approved:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source is already approved.")
+            approved = source.model_copy(
+                update={"approved": True, "reviewed_by": actor.display_name, "reviewed_at": datetime.now(timezone.utc)}
+            )
+            connection.execute(
+                "UPDATE policy_sources SET source_json = ? WHERE source_id = ?",
+                (approved.model_dump_json(), source_id),
+            )
+            self._append_policy_audit_event(
+                connection, source_id, "policy_source_approved", {"topic": approved.topic}, actor
+            )
+        return approved
 
     def retire_policy_source(self, source_id: str, actor: Actor) -> PolicySource:
         with self._connect() as connection:
@@ -825,6 +859,8 @@ class CaseStore:
         ]
         return DocumentEvidence(
             **request.model_dump(),
+            content_sha256=hashlib.sha256(request.content.encode("utf-8")).hexdigest(),
+            content_size_bytes=len(request.content.encode("utf-8")),
             extracted_jurisdictions=jurisdictions,
             extracted_controls=controls,
             risk_indicators=indicators,
@@ -836,6 +872,24 @@ class CaseStore:
                 "SELECT document_json FROM evidence_documents WHERE case_id = ? ORDER BY document_id", (case_id,)
             ).fetchall()
         return [DocumentEvidence.model_validate_json(row["document_json"]) for row in rows]
+
+    def verify_document_evidence(self, case_id: str, document_id: str) -> DocumentIntegrityVerification:
+        evidence = next(
+            (document for document in self.document_evidence(case_id) if document.document_id == document_id), None
+        )
+        if not evidence:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document evidence not found.")
+        content_bytes = evidence.content.encode("utf-8")
+        return DocumentIntegrityVerification(
+            case_id=case_id,
+            document_id=document_id,
+            content_sha256=evidence.content_sha256,
+            content_size_bytes=evidence.content_size_bytes,
+            valid=(
+                evidence.content_sha256 == hashlib.sha256(content_bytes).hexdigest()
+                and evidence.content_size_bytes == len(content_bytes)
+            ),
+        )
 
     def ai_executions(self, case_id: str) -> list[AIExecution]:
         self.get(case_id)
@@ -1011,7 +1065,13 @@ class CaseStore:
                 connection,
                 case_id,
                 "document_evidence_added",
-                {"document_id": evidence.document_id, "document_type": evidence.document_type, "synthetic": True},
+                {
+                    "document_id": evidence.document_id,
+                    "document_type": evidence.document_type,
+                    "content_sha256": evidence.content_sha256,
+                    "content_size_bytes": evidence.content_size_bytes,
+                    "synthetic": True,
+                },
                 actor=actor.display_name,
             )
         return evidence
@@ -1539,6 +1599,13 @@ def create_policy_source(
     return case_store.add_policy_source(request, actor)
 
 
+@app.post("/api/v1/policy-sources/{source_id}/approve", response_model=PolicySource, tags=["policy"])
+def approve_policy_source(
+    source_id: str, actor: Annotated[Actor, Depends(require_roles(Role.COMMITTEE_MEMBER))]
+) -> PolicySource:
+    return case_store.approve_policy_source(source_id, actor)
+
+
 @app.post("/api/v1/policy-sources/{source_id}/retire", response_model=PolicySource, tags=["policy"])
 def retire_policy_source(
     source_id: str, actor: Annotated[Actor, Depends(require_roles(Role.ADMINISTRATOR))]
@@ -1609,6 +1676,19 @@ def add_case_document_evidence(
     if case.intake.business_owner != actor.display_name:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only add evidence to their own cases.")
     return case_store.add_document_evidence(case_id, request, actor)
+
+
+@app.get(
+    "/api/v1/cases/{case_id}/document-evidence/{document_id}/integrity",
+    response_model=DocumentIntegrityVerification,
+    tags=["documents"],
+)
+def verify_case_document_evidence(
+    case_id: str,
+    document_id: str,
+    actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER, Role.ANALYST, Role.COMMITTEE_MEMBER, Role.AUDITOR))],
+) -> DocumentIntegrityVerification:
+    return case_store.verify_document_evidence(case_id, document_id)
 
 
 @app.post("/api/v1/cases/{case_id}/risk-assessment", response_model=CaseDetail, tags=["risk"])

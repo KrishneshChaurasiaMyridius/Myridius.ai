@@ -5,6 +5,8 @@
 - `GET /health` confirms that the API process is accepting requests.
 - `GET /api/v1/operations/metrics` requires an auditor or administrator actor. It reports case distribution, audit-event volume, hash-chain failures, active risk configuration and approved policy-source count.
 - Every API response includes `X-Request-Id`. Supply that header when calling the API or capture the generated value from the response, then use it to locate the JSON request-completion event in service logs.
+- `GET /api/v1/cases/{case_id}/document-evidence/{document_id}/integrity` verifies a stored evidence record's server-generated SHA-256 fingerprint and byte count. A false result is a stop-the-line evidence-integrity incident.
+- New policy sources are registered by an administrator and require committee approval through `POST /api/v1/policy-sources/{source_id}/approve` before they can be retrieved for draft citations.
 - A non-zero `invalid_audit_chain_count` is a stop-the-line condition: preserve the database, prevent further evidence exports and escalate to the risk-control owner.
 
 ## Local demonstration

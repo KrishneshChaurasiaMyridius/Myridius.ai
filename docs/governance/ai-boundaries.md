@@ -10,6 +10,8 @@ The `assessment-draft` API is a deterministic mock adapter. It produces a review
 
 Every completed draft also records an immutable execution ledger entry containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, duration, and completion time. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
 
+Policy text is also governed independently of drafting. An administrator may register a synthetic policy source, but the source remains pending review and is excluded from retrieval until a committee member explicitly approves it. Retirement removes a source from future retrieval while preserving its audit history.
+
 | Stage | System action | Human gate |
 | --- | --- | --- |
 | Intake | Validates required synthetic-data fields | Product owner submits the request |

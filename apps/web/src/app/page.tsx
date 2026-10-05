@@ -29,7 +29,7 @@ type RiskConfiguration = {
   updated_at: string;
 };
 type Actor = { actor_id: string; display_name: string; role: string };
-type PolicySource = { source_id: string; title: string; topic: string; approved: boolean; retired_at?: string };
+type PolicySource = { source_id: string; title: string; topic: string; approved: boolean; reviewed_by?: string; retired_at?: string };
 type WorkflowNotification = { notification_id: string; case_id: string; action: string; message: string; created_at: string; read_at?: string };
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -211,7 +211,7 @@ export default function Home() {
     try {
       await request<PolicySource>("/api/v1/policy-sources", { method: "POST", body: JSON.stringify(policyInput) }, true);
       await loadPolicySources();
-      setMessage("Approved synthetic policy source added to the governed register.");
+      setMessage("Synthetic policy source registered for committee approval.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to add policy source."); }
     finally { setWorking(false); }
   }
@@ -223,6 +223,16 @@ export default function Home() {
       await loadPolicySources();
       setMessage("Policy source retired; it will not appear in future assessment retrieval.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to retire policy source."); }
+    finally { setWorking(false); }
+  }
+
+  async function approvePolicySource(sourceId: string) {
+    setWorking(true);
+    try {
+      await request<PolicySource>(`/api/v1/policy-sources/${sourceId}/approve`, { method: "POST" }, true);
+      await loadPolicySources();
+      setMessage("Policy source approved for future cited drafts.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to approve policy source."); }
     finally { setWorking(false); }
   }
 
@@ -271,7 +281,7 @@ export default function Home() {
     <section className="demo-bar" aria-live="polite"><span>{message}</span></section>
     <section className="inbox"><div><p className="label">WORKFLOW INBOX</p><h2>{notifications.filter((notification) => !notification.read_at).length} open handoff(s)</h2></div>{notifications.length ? <ul>{notifications.slice(0, 5).map((notification) => <li className={notification.read_at ? "read" : "unread"} key={notification.notification_id}><div><strong>{notification.action.replaceAll("_", " ")}</strong><span>{notification.message} · {notification.case_id}</span></div>{notification.read_at ? <small>Acknowledged</small> : <button type="button" disabled={working} onClick={() => void acknowledgeNotification(notification)}>Open and acknowledge</button>}</li>)}</ul> : <p className="muted">No workflow handoffs for this role.</p>}</section>
     {riskConfiguration && <section className="configuration"><div><p className="label">ACTIVE SCORING CONFIGURATION</p><h2>{riskConfiguration.version}</h2><p className="muted">Updated by {riskConfiguration.updated_by} · {new Date(riskConfiguration.updated_at).toLocaleDateString()}</p></div><dl><div><dt>Factor weights</dt><dd>{Object.entries(riskConfiguration.factor_weights).map(([factor, weight]) => `${factor}: ${weight}`).join(" · ")}</dd></div><div><dt>Residual-risk floor</dt><dd>1 / 5</dd></div><div><dt>Rating bands</dt><dd>Low ≤ {riskConfiguration.low_risk_maximum}; moderate ≤ {riskConfiguration.moderate_risk_maximum}</dd></div><div><dt>Control mitigation</dt><dd>Effectiveness ÷ {riskConfiguration.control_mitigation_divisor}</dd></div></dl></section>}
-    {onlyRoles(["administrator"], <section className="policy-register"><div><p className="label">GOVERNED POLICY REGISTER</p><h2>Approved synthetic sources</h2><p className="muted">Retired sources remain visible for governance history but are excluded from new drafts.</p></div><form className="policy-form" onSubmit={(event) => void createPolicySource(event)}><label>Source ID<input required pattern="[A-Z0-9-]{4,80}" value={policyInput.source_id} onChange={(event) => setPolicyInput({ ...policyInput, source_id: event.target.value })} /></label><label>Topic<input required value={policyInput.topic} onChange={(event) => setPolicyInput({ ...policyInput, topic: event.target.value })} /></label><label>Title<input required minLength={10} value={policyInput.title} onChange={(event) => setPolicyInput({ ...policyInput, title: event.target.value })} /></label><label>Policy excerpt<textarea required minLength={20} value={policyInput.excerpt} onChange={(event) => setPolicyInput({ ...policyInput, excerpt: event.target.value })} /></label><button type="submit" disabled={working}>Add approved source</button></form><ul className="policy-list">{policySources.map((source) => <li key={source.source_id}><strong>{source.title}</strong><span>{source.source_id} · {source.topic} · {source.approved ? "approved" : "retired"}</span>{source.approved && <button type="button" disabled={working} onClick={() => void retirePolicySource(source.source_id)}>Retire</button>}</li>)}</ul></section>)}
+    {onlyRoles(["administrator", "committee_member"], <section className="policy-register"><div><p className="label">GOVERNED POLICY REGISTER</p><h2>Policy source review</h2><p className="muted">Registered sources require committee approval before they can be cited in new drafts.</p></div>{activeActor?.role === "administrator" && <form className="policy-form" onSubmit={(event) => void createPolicySource(event)}><label>Source ID<input required pattern="[A-Z0-9-]{4,80}" value={policyInput.source_id} onChange={(event) => setPolicyInput({ ...policyInput, source_id: event.target.value })} /></label><label>Topic<input required value={policyInput.topic} onChange={(event) => setPolicyInput({ ...policyInput, topic: event.target.value })} /></label><label>Title<input required minLength={10} value={policyInput.title} onChange={(event) => setPolicyInput({ ...policyInput, title: event.target.value })} /></label><label>Policy excerpt<textarea required minLength={20} value={policyInput.excerpt} onChange={(event) => setPolicyInput({ ...policyInput, excerpt: event.target.value })} /></label><button type="submit" disabled={working}>Register source for review</button></form>}<ul className="policy-list">{policySources.map((source) => <li key={source.source_id}><strong>{source.title}</strong><span>{source.source_id} · {source.topic} · {source.retired_at ? "retired" : source.approved ? "approved" : "pending review"}{source.reviewed_by ? ` · reviewed by ${source.reviewed_by}` : ""}</span>{activeActor?.role === "committee_member" && !source.approved && !source.retired_at && <button type="button" disabled={working} onClick={() => void approvePolicySource(source.source_id)}>Approve</button>}{activeActor?.role === "administrator" && source.approved && <button type="button" disabled={working} onClick={() => void retirePolicySource(source.source_id)}>Retire</button>}</li>)}</ul></section>)}
     <form className="intake-form" onSubmit={(event) => void createCase(event)}>
       <div><p className="label">PRODUCT OWNER INTAKE</p><h2>{activeCase?.status === "draft" ? `Revise ${activeCase.case_id}` : "Create synthetic change case"}</h2><p className="muted">All fields are synthetic demo data. Comma-separate multiple values.</p></div>
       <label>Change title<input required minLength={8} maxLength={160} value={intake.title} onChange={(event) => setIntake({ ...intake, title: event.target.value })} /></label>
