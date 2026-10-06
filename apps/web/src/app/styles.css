@@ -107,6 +107,18 @@ button:disabled { cursor: wait; opacity: .55; }
 .action-form input, .action-form select, .action-form textarea { background: #fbfcf9; border: 1px solid var(--line); border-radius: 0; color: var(--ink); font: .9rem Georgia, "Times New Roman", serif; padding: 9px; width: 100%; }
 .action-form textarea { min-height: 84px; resize: vertical; }
 .action-form button { justify-self: start; }
+.evidence-upload { background: var(--surface); border-left: 6px solid var(--teal); margin-top: 24px; padding: 20px 22px; }
+.evidence-upload label { max-width: 560px; }
+.evidence-upload input[type="file"] { font-family: ui-monospace, monospace; font-size: .75rem; }
+.evidence-provenance { background: var(--surface); border-left: 6px solid var(--forest); margin-top: 24px; padding: 20px 22px; }
+.evidence-provenance h2 { margin-bottom: 6px; }
+.evidence-provenance ul { border-top: 1px solid var(--line); list-style: none; margin: 16px 0 0; padding: 0; }
+.evidence-provenance li { border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 12px 0; }
+.evidence-provenance strong, .evidence-provenance span { display: block; }
+.evidence-provenance span { color: var(--muted); font: .7rem ui-monospace, monospace; }
+.evidence-provenance button { font-size: .72rem; padding: 7px 10px; }
+.integrity-valid { color: var(--forest) !important; font-weight: 700 !important; }
+.integrity-invalid { color: #9d2500 !important; font-weight: 700 !important; }
 .risk-inputs { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .condition-fields { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .condition-fields label:last-child { grid-column: 1 / -1; }

@@ -7,17 +7,27 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 from time import perf_counter
-from typing import Annotated, Any, Callable, Literal, Sequence
+from typing import Annotated, Any, Callable, Literal, Protocol, Sequence
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+import jwt
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl, ValidationInfo, field_validator, model_validator
 
 
 LOGGER = logging.getLogger("risk_assessment_api")
+
+
+def cors_allowed_origins() -> list[str]:
+    configured_origins = os.getenv("CORS_ALLOWED_ORIGINS")
+    if configured_origins:
+        return [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
+    return ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
 class StoreConnection:
@@ -101,13 +111,66 @@ DEMO_ACTORS = {
 }
 
 
-def current_actor(x_actor_id: Annotated[str | None, Header()] = None) -> Actor:
-    if not x_actor_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="An X-Actor-Id header is required.")
-    actor = DEMO_ACTORS.get(x_actor_id)
-    if not actor:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown demo actor.")
-    return actor
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class IdentitySettings(BaseModel):
+    mode: Literal["demo", "oidc"] = "demo"
+    issuer: str | None = None
+    audience: str | None = None
+    jwks_url: str | None = None
+    role_claim: str = "fcrm_role"
+
+
+def identity_settings() -> IdentitySettings:
+    mode = os.getenv("AUTH_MODE", "demo").lower()
+    if mode not in {"demo", "oidc"}:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AUTH_MODE must be demo or oidc.")
+    issuer = os.getenv("OIDC_ISSUER")
+    return IdentitySettings(
+        mode=mode,
+        issuer=issuer,
+        audience=os.getenv("OIDC_AUDIENCE"),
+        jwks_url=os.getenv("OIDC_JWKS_URL") or (f"{issuer.rstrip('/')}/.well-known/jwks.json" if issuer else None),
+        role_claim=os.getenv("OIDC_ROLE_CLAIM", "fcrm_role"),
+    )
+
+
+def current_actor(
+    x_actor_id: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
+) -> Actor:
+    settings = identity_settings()
+    if settings.mode == "demo":
+        if not x_actor_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="An X-Actor-Id header is required in demo mode.")
+        actor = DEMO_ACTORS.get(x_actor_id)
+        if not actor:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown demo actor.")
+        return actor
+    if not settings.issuer or not settings.audience or not settings.jwks_url:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="OIDC issuer, audience, and JWKS configuration are required.")
+    if not credentials:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="A bearer token is required in OIDC mode.")
+    try:
+        signing_key = jwt.PyJWKClient(settings.jwks_url).get_signing_key_from_jwt(credentials.credentials).key
+        claims = jwt.decode(
+            credentials.credentials,
+            signing_key,
+            algorithms=["RS256", "ES256"],
+            audience=settings.audience,
+            issuer=settings.issuer,
+        )
+        role = Role(claims[settings.role_claim])
+    except (KeyError, ValueError, jwt.PyJWTError) as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid OIDC bearer token.") from error
+    actor_id = claims.get("sub")
+    if not isinstance(actor_id, str) or not actor_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token requires a subject claim.")
+    display_name = claims.get("name") or claims.get("preferred_username") or actor_id
+    if not isinstance(display_name, str):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC display-name claim must be text.")
+    return Actor(actor_id=actor_id, display_name=display_name, role=role)
 
 
 def require_roles(*roles: Role) -> Callable[[Actor], Actor]:
@@ -147,6 +210,11 @@ class HealthResponse(BaseModel):
     timestamp: datetime
 
 
+class ReadinessResponse(HealthResponse):
+    database: Literal["available"]
+    authentication_mode: Literal["demo", "oidc"]
+
+
 class OperationsMetrics(BaseModel):
     generated_at: datetime
     cases_by_status: dict[str, int]
@@ -179,6 +247,9 @@ class DocumentEvidence(DocumentEvidenceRequest):
     document_id: str = Field(default_factory=lambda: str(uuid4()))
     content_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     content_size_bytes: int | None = Field(default=None, ge=0)
+    original_filename: str | None = Field(default=None, max_length=255)
+    media_type: str | None = Field(default=None, max_length=100)
+    ingestion_method: Literal["structured_text", "uploaded_text"] = "structured_text"
     extracted_jurisdictions: list[str] = Field(default_factory=list)
     extracted_controls: list[str] = Field(default_factory=list)
     risk_indicators: list[str] = Field(default_factory=list)
@@ -325,8 +396,50 @@ class AIExecution(BaseModel):
     estimated_input_tokens: int = Field(ge=0)
     estimated_output_tokens: int = Field(ge=0)
     duration_ms: int = Field(ge=0)
-    status: Literal["completed"] = "completed"
+    status: Literal["completed", "failed"] = "completed"
+    failure_reason: str | None = None
     completed_at: datetime
+
+
+class GeneratedAssessment(BaseModel):
+    summary: str
+    analyst_questions: list[str]
+
+
+class AssessmentDraftProvider(Protocol):
+    adapter_name: str
+
+    def generate(self, case: "CaseDetail", retrieval_query: str, evidence_context: list[str]) -> GeneratedAssessment: ...
+
+
+class DeterministicAssessmentProvider:
+    adapter_name = "deterministic-mock-v1"
+
+    def generate(self, case: "CaseDetail", retrieval_query: str, evidence_context: list[str]) -> GeneratedAssessment:
+        if not case.risk_assessment:
+            raise RuntimeError("Risk assessment is required before draft generation.")
+        return GeneratedAssessment(
+            summary=(
+                f"The proposed {case.change_type.replace('_', ' ')} change has an inherent risk score of "
+                f"{case.risk_assessment.inherent_risk}/5 and a residual risk score of {case.residual_risk}/5. "
+                f"The case requires analyst confirmation before committee review."
+            ),
+            analyst_questions=[
+                "Confirm that sanctions screening covers all stated jurisdictions before launch.",
+                "Validate the operating effectiveness evidence for the proposed transaction monitoring control.",
+            ],
+        )
+
+
+class ProviderConfigurationError(RuntimeError):
+    pass
+
+
+def assessment_draft_provider() -> AssessmentDraftProvider:
+    adapter = os.getenv("AI_ADAPTER", "deterministic-mock-v1")
+    if adapter == "deterministic-mock-v1":
+        return DeterministicAssessmentProvider()
+    raise ProviderConfigurationError(f"Assessment provider '{adapter}' is not configured.")
 
 
 class AnalystOverride(BaseModel):
@@ -1056,6 +1169,20 @@ class CaseStore:
         if case.status is not CaseStatus.DRAFT:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Evidence can only be added while the case is a draft.")
         evidence = self._extract_document_evidence(request)
+        return self._store_document_evidence(case_id, evidence, actor)
+
+    def add_uploaded_document_evidence(
+        self, case_id: str, request: DocumentEvidenceRequest, actor: Actor, filename: str, media_type: str
+    ) -> DocumentEvidence:
+        case = self.get(case_id)
+        if case.status is not CaseStatus.DRAFT:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Evidence can only be added while the case is a draft.")
+        evidence = self._extract_document_evidence(request).model_copy(
+            update={"original_filename": filename, "media_type": media_type, "ingestion_method": "uploaded_text"}
+        )
+        return self._store_document_evidence(case_id, evidence, actor)
+
+    def _store_document_evidence(self, case_id: str, evidence: DocumentEvidence, actor: Actor) -> DocumentEvidence:
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO evidence_documents (document_id, case_id, document_json) VALUES (?, ?, ?)",
@@ -1070,6 +1197,7 @@ class CaseStore:
                     "document_type": evidence.document_type,
                     "content_sha256": evidence.content_sha256,
                     "content_size_bytes": evidence.content_size_bytes,
+                    "ingestion_method": evidence.ingestion_method,
                     "synthetic": True,
                 },
                 actor=actor.display_name,
@@ -1280,30 +1408,62 @@ class CaseStore:
             f"indicators={', '.join(evidence.risk_indicators) or 'none'}"
             for evidence in case.document_evidence
         ]
-        summary = (
-            f"The proposed {case.change_type.replace('_', ' ')} change has an inherent risk score of "
-            f"{assessment.inherent_risk}/5 and a residual risk score of {case.residual_risk}/5. "
-            f"The case requires analyst confirmation before committee review."
-        )
+        estimated_input_tokens = max(1, math.ceil((len(retrieval_query) + sum(len(item) for item in evidence_context)) / 4))
+        started_at = perf_counter()
+        try:
+            provider = assessment_draft_provider()
+            generated = provider.generate(case, retrieval_query, evidence_context)
+        except (ProviderConfigurationError, RuntimeError) as error:
+            failed_execution = AIExecution(
+                execution_id=str(uuid4()),
+                case_id=case_id,
+                adapter=os.getenv("AI_ADAPTER", "deterministic-mock-v1"),
+                prompt_version="assessment-draft-v1",
+                retrieval_query=retrieval_query,
+                evidence_document_count=len(case.document_evidence),
+                citation_count=len(citations),
+                estimated_input_tokens=estimated_input_tokens,
+                estimated_output_tokens=0,
+                duration_ms=round((perf_counter() - started_at) * 1000),
+                status="failed",
+                failure_reason=str(error),
+                completed_at=datetime.now(timezone.utc),
+            )
+            with self._connect() as connection:
+                connection.execute(
+                    "INSERT INTO ai_executions (execution_id, case_id, execution_json) VALUES (?, ?, ?)",
+                    (failed_execution.execution_id, case_id, failed_execution.model_dump_json()),
+                )
+                self._append_audit_event(
+                    connection,
+                    case_id,
+                    "assessment_draft_failed",
+                    {
+                        "execution_id": failed_execution.execution_id,
+                        "adapter": failed_execution.adapter,
+                        "failure_reason": failed_execution.failure_reason,
+                    },
+                )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Assessment provider is unavailable; the case remains in analyst review.",
+            ) from error
         execution = AIExecution(
             execution_id=str(uuid4()),
             case_id=case_id,
-            adapter="deterministic-mock-v1",
+            adapter=provider.adapter_name,
             prompt_version="assessment-draft-v1",
             retrieval_query=retrieval_query,
             evidence_document_count=len(case.document_evidence),
             citation_count=len(citations),
-            estimated_input_tokens=max(1, math.ceil((len(retrieval_query) + sum(len(item) for item in evidence_context)) / 4)),
-            estimated_output_tokens=max(1, math.ceil(len(summary) / 4)),
-            duration_ms=0,
+            estimated_input_tokens=estimated_input_tokens,
+            estimated_output_tokens=max(1, math.ceil(len(generated.summary) / 4)),
+            duration_ms=round((perf_counter() - started_at) * 1000),
             completed_at=datetime.now(timezone.utc),
         )
         draft = AssessmentDraft(
-            summary=summary,
-            analyst_questions=[
-                "Confirm that sanctions screening covers all stated jurisdictions before launch.",
-                "Validate the operating effectiveness evidence for the proposed transaction monitoring control.",
-            ],
+            summary=generated.summary,
+            analyst_questions=generated.analyst_questions,
             citations=citations,
             evidence_document_ids=[evidence.document_id for evidence in case.document_evidence],
             evidence_context=evidence_context,
@@ -1514,7 +1674,7 @@ case_store = CaseStore(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=cors_allowed_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "X-Actor-Id", "X-Request-Id"],
@@ -1547,6 +1707,27 @@ async def correlate_request(request: Request, call_next: Callable[..., Any]) -> 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
 def health() -> HealthResponse:
     return HealthResponse(timestamp=datetime.now(timezone.utc))
+
+
+@app.get("/ready", response_model=ReadinessResponse, tags=["operations"])
+def readiness() -> ReadinessResponse:
+    settings = identity_settings()
+    if settings.mode == "oidc" and not (settings.issuer and settings.audience and settings.jwks_url):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OIDC issuer, audience, and JWKS configuration are required for readiness.",
+        )
+    try:
+        with case_store._connect() as connection:
+            connection.execute("SELECT 1")
+    except Exception as error:
+        LOGGER.exception("readiness_database_unavailable")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database is unavailable.") from error
+    return ReadinessResponse(
+        timestamp=datetime.now(timezone.utc),
+        database="available",
+        authentication_mode=settings.mode,
+    )
 
 
 @app.get("/api/v1/operations/metrics", response_model=OperationsMetrics, tags=["operations"])
@@ -1676,6 +1857,50 @@ def add_case_document_evidence(
     if case.intake.business_owner != actor.display_name:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only add evidence to their own cases.")
     return case_store.add_document_evidence(case_id, request, actor)
+
+
+@app.post(
+    "/api/v1/cases/{case_id}/document-evidence/upload",
+    response_model=DocumentEvidence,
+    status_code=status.HTTP_201_CREATED,
+    tags=["documents"],
+)
+async def upload_case_document_evidence(
+    case_id: str,
+    title: Annotated[str, Form(min_length=5, max_length=200)],
+    document_type: Annotated[str, Form(min_length=3, max_length=100)],
+    is_synthetic: Annotated[bool, Form()],
+    file: Annotated[UploadFile, File()],
+    actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER))],
+) -> DocumentEvidence:
+    if not is_synthetic:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only synthetic evidence may be uploaded.")
+    case = case_store.get(case_id)
+    if case.intake.business_owner != actor.display_name:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product owners may only add evidence to their own cases.")
+    allowed_media_types = {"text/plain", "text/markdown"}
+    media_type = file.content_type or ""
+    if media_type not in allowed_media_types:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Only plain-text or Markdown synthetic evidence is supported.")
+    filename = file.filename or ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .()_-]{0,254}", filename):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Evidence filename contains unsupported characters.")
+    content_bytes = await file.read()
+    if not content_bytes or len(content_bytes) > 20_000:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Evidence upload must be between 1 and 20,000 bytes.")
+    try:
+        content = content_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Evidence upload must be UTF-8 text.") from error
+    request = DocumentEvidenceRequest(
+        title=title,
+        document_type=document_type,
+        content=content,
+        is_synthetic=True,
+    )
+    return case_store.add_uploaded_document_evidence(
+        case_id, request, actor, filename=filename, media_type=media_type
+    )
 
 
 @app.get(

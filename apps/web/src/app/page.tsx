@@ -16,9 +16,10 @@ type Case = {
   analyst_override?: { residual_risk: number };
   committee_decision?: { decision: string; conditions: { condition_id: string; description: string; owner: string; due_date: string; verification_criteria: string; status: string; verified_by?: string }[] };
   intake?: { title: string; change_type: string; business_rationale: string; business_owner: string; target_launch_date: string; jurisdictions: string[]; customer_exposure: string; delivery_channels: string[]; payment_characteristics: string[]; third_parties: string[]; proposed_controls: string[]; attachment_urls: string[] };
-  document_evidence?: { document_id: string; title: string; document_type: string; extracted_jurisdictions: string[]; extracted_controls: string[]; risk_indicators: string[] }[];
+  document_evidence?: { document_id: string; title: string; document_type: string; content_sha256?: string; content_size_bytes?: number; original_filename?: string; media_type?: string; ingestion_method: "structured_text" | "uploaded_text"; extracted_jurisdictions: string[]; extracted_controls: string[]; risk_indicators: string[] }[];
 };
 type AuditEvent = { event_id: string; action: string; actor: string };
+type EvidenceIntegrity = { document_id: string; valid: boolean; content_sha256?: string; content_size_bytes?: number };
 type RiskConfiguration = {
   version: string;
   factor_weights: Record<string, number>;
@@ -75,6 +76,8 @@ export default function Home() {
   const [queueSearch, setQueueSearch] = useState("");
   const [queueStatus, setQueueStatus] = useState<CaseStatus | "all">("all");
   const [documentInput, setDocumentInput] = useState({ title: "Synthetic control test report", document_type: "control_test", content: "Synthetic GB and US cross-border testing confirms sanctions screening and transaction monitoring.", source_url: "https://example.test/synthetic-control-report.pdf" });
+  const [evidenceUpload, setEvidenceUpload] = useState<File | null>(null);
+  const [evidenceIntegrity, setEvidenceIntegrity] = useState<Record<string, EvidenceIntegrity>>({});
   const [policySources, setPolicySources] = useState<PolicySource[]>([]);
   const [policyInput, setPolicyInput] = useState({ source_id: "RAW-SYNTHETIC-POLICY-03", title: "Synthetic Cross-Border Control Standard", topic: "controls_and_governance", excerpt: "Synthetic cross-border changes require documented sanctions screening and transaction monitoring control evidence." });
   const [notifications, setNotifications] = useState<WorkflowNotification[]>([]);
@@ -205,6 +208,50 @@ export default function Home() {
     finally { setWorking(false); }
   }
 
+  async function uploadDocumentEvidence(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeCase || !evidenceUpload) {
+      setMessage("Select a synthetic UTF-8 text or Markdown document to upload.");
+      return;
+    }
+    if (!['text/plain', 'text/markdown'].includes(evidenceUpload.type)) {
+      setMessage("Only synthetic plain-text or Markdown evidence can be uploaded.");
+      return;
+    }
+    setWorking(true);
+    try {
+      const payload = new FormData();
+      payload.set("title", documentInput.title);
+      payload.set("document_type", documentInput.document_type);
+      payload.set("is_synthetic", "true");
+      payload.set("file", evidenceUpload);
+      const response = await fetch(`${apiUrl}/api/v1/cases/${activeCase.case_id}/document-evidence/upload`, {
+        method: "POST",
+        headers: { "X-Actor-Id": actorId },
+        body: payload,
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail ?? "Evidence upload failed.");
+      }
+      setEvidenceUpload(null);
+      await loadCase(activeCase.case_id);
+      setMessage("Synthetic text evidence uploaded, hashed, and extracted for review.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to upload document evidence."); }
+    finally { setWorking(false); }
+  }
+
+  async function verifyDocumentEvidence(documentId: string) {
+    if (!activeCase) return;
+    setWorking(true);
+    try {
+      const verification = await request<EvidenceIntegrity>(`/api/v1/cases/${activeCase.case_id}/document-evidence/${documentId}/integrity`, undefined, true);
+      setEvidenceIntegrity({ ...evidenceIntegrity, [documentId]: verification });
+      setMessage(verification.valid ? "Evidence integrity verified." : "Evidence integrity verification failed.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to verify document integrity."); }
+    finally { setWorking(false); }
+  }
+
   async function createPolicySource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setWorking(true);
@@ -298,6 +345,8 @@ export default function Home() {
       <label className="rationale">Business rationale<textarea required minLength={20} maxLength={2000} value={intake.business_rationale} onChange={(event) => setIntake({ ...intake, business_rationale: event.target.value })} /></label>
       {onlyRoles(["product_owner"], <div className="intake-actions"><button type="submit" disabled={working}>{activeCase?.status === "draft" ? "Save draft revision" : "Create synthetic intake"}</button>{activeCase?.status === "draft" && <button className="secondary" type="button" disabled={working} onClick={() => { setActiveCase(null); setEvents([]); setIntake(initialIntake); }}>Start new intake</button>}</div>)}
     </form>
+    {activeCase?.status === "draft" && onlyRoles(["product_owner"], <form className="action-form evidence-upload" onSubmit={(event) => void uploadDocumentEvidence(event)}><p className="label">SYNTHETIC TEXT UPLOAD</p><label>Document title<input required minLength={5} maxLength={200} value={documentInput.title} onChange={(event) => setDocumentInput({ ...documentInput, title: event.target.value })} /></label><label>Document type<input required minLength={3} maxLength={100} value={documentInput.document_type} onChange={(event) => setDocumentInput({ ...documentInput, document_type: event.target.value })} /></label><label>Text or Markdown file<input required type="file" accept="text/plain,text/markdown,.txt,.md" onChange={(event) => setEvidenceUpload(event.target.files?.[0] ?? null)} /></label><p className="muted">Synthetic UTF-8 text only, up to 20KB. Files are hashed before evidence is recorded.</p><button type="submit" disabled={working || !evidenceUpload}>Upload and extract evidence</button></form>)}
+    {activeCase?.document_evidence?.length ? <section className="evidence-provenance"><p className="label">EVIDENCE PROVENANCE</p><h2>Recorded evidence</h2><p className="muted">Server-calculated hashes are available for integrity review.</p><ul>{activeCase.document_evidence.map((evidence) => { const verification = evidenceIntegrity[evidence.document_id]; return <li key={evidence.document_id}><div><strong>{evidence.title}</strong><span>{evidence.ingestion_method === "uploaded_text" ? `${evidence.original_filename} · ${evidence.media_type}` : "Structured synthetic text"}</span><span>SHA-256: {evidence.content_sha256 ?? "not recorded"} · {evidence.content_size_bytes ?? 0} bytes</span></div>{activeActor?.role !== "administrator" && <button type="button" disabled={working} onClick={() => void verifyDocumentEvidence(evidence.document_id)}>Verify integrity</button>}{verification && <span className={verification.valid ? "integrity-valid" : "integrity-invalid"}>{verification.valid ? "Integrity verified" : "Integrity failed"}</span>}</li>; })}</ul></section> : null}
     <section className="workspace">
       <aside className="case-list"><p className="label">CASE QUEUE · {visibleCases.length}/{cases.length}</p><div className="queue-filters"><input aria-label="Search cases" placeholder="Search case queue" value={queueSearch} onChange={(event) => setQueueSearch(event.target.value)} /><select aria-label="Filter by status" value={queueStatus} onChange={(event) => setQueueStatus(event.target.value as CaseStatus | "all")}><option value="all">All statuses</option>{["draft", "intake_review", "analyst_review", "committee_decision", "decided"].map((status) => <option value={status} key={status}>{status.replaceAll("_", " ")}</option>)}</select></div>{visibleCases.length ? visibleCases.map((item) => <button className={activeCase?.case_id === item.case_id ? "case-item selected" : "case-item"} type="button" key={item.case_id} onClick={() => void loadCase(item.case_id)}><strong>{item.title}</strong><span>{item.case_id} · {item.status.replace("_", " ")}</span></button>) : <p className="muted">No cases match this queue view.</p>}</aside>
       <section className="case-content">{!activeCase ? <div className="empty"><h2>Start a governed assessment</h2><p>Create a synthetic case, then progress it through explicit human gates.</p></div> : <>

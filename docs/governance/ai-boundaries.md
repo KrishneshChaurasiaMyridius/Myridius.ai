@@ -8,7 +8,7 @@ The workbench prepares an assessment; authorised humans make every risk and appr
 
 The `assessment-draft` API is a deterministic mock adapter. It produces a review-only summary, analyst questions and visible citations. Its response carries `decision_authority: human_only` and it cannot alter a case status, risk configuration or committee outcome.
 
-Every completed draft also records an immutable execution ledger entry containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, duration, and completion time. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
+Every draft attempt runs through an explicit provider adapter boundary. Completed and failed attempts both create immutable execution ledger entries containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, duration, completion time, and a failure reason when applicable. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
 
 Policy text is also governed independently of drafting. An administrator may register a synthetic policy source, but the source remains pending review and is excluded from retrieval until a committee member explicitly approves it. Retirement removes a source from future retrieval while preserving its audit history.
 
@@ -21,7 +21,7 @@ Policy text is also governed independently of drafting. An administrator may reg
 
 ## Failure behavior
 
-If a draft cannot be prepared, the case remains in analyst review. It cannot advance automatically. The API records an audit event for every successful material action, and audit events are hash-linked by case.
+If a draft provider is unconfigured or cannot prepare a draft, the case remains in analyst review and the failure is recorded in both the execution ledger and hash-linked audit trail. It cannot advance automatically. The API records an audit event for every successful material action, and audit events are hash-linked by case.
 
 ## Scope note
 

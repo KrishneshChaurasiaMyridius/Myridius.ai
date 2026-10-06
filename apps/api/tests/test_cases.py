@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("RAW_DATABASE_PATH", str(Path(gettempdir()) / "myridius-api-tests.db"))
 
+import app.main as main
 from app.main import app, case_store
 
 
@@ -66,6 +67,56 @@ def test_api_responses_include_a_correlation_id() -> None:
     assert health.headers["X-Request-Id"] == request_id
     assert denied.status_code == 403
     assert denied.headers["X-Request-Id"]
+
+
+def test_readiness_checks_database_and_identity_configuration(monkeypatch) -> None:
+    ready = client.get("/ready")
+    monkeypatch.setenv("AUTH_MODE", "oidc")
+    incomplete_oidc = client.get("/ready")
+
+    assert ready.status_code == 200
+    assert ready.json()["database"] == "available"
+    assert ready.json()["authentication_mode"] == "demo"
+    assert incomplete_oidc.status_code == 503
+
+
+def test_cors_origins_are_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://workbench.example.test, https://admin.example.test ")
+
+    assert main.cors_allowed_origins() == ["https://workbench.example.test", "https://admin.example.test"]
+
+
+def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -> None:
+    class SigningKey:
+        key = "test-public-key"
+
+    class JwksClient:
+        def __init__(self, url: str) -> None:
+            assert url == "https://identity.example.test/keys"
+
+        def get_signing_key_from_jwt(self, token: str) -> SigningKey:
+            assert token == "valid-token"
+            return SigningKey()
+
+    def decode(token: str, key: str, **kwargs: object) -> dict[str, str]:
+        assert token == "valid-token"
+        assert key == "test-public-key"
+        assert kwargs["audience"] == "risk-workbench"
+        assert kwargs["issuer"] == "https://identity.example.test"
+        return {"sub": "oidc-product-owner", "name": "Taylor Product Owner", "fcrm_role": "product_owner"}
+
+    monkeypatch.setenv("AUTH_MODE", "oidc")
+    monkeypatch.setenv("OIDC_ISSUER", "https://identity.example.test")
+    monkeypatch.setenv("OIDC_AUDIENCE", "risk-workbench")
+    monkeypatch.setenv("OIDC_JWKS_URL", "https://identity.example.test/keys")
+    monkeypatch.setattr(main.jwt, "PyJWKClient", JwksClient)
+    monkeypatch.setattr(main.jwt, "decode", decode)
+
+    rejected = client.post("/api/v1/cases", json=valid_intake(), headers=PRODUCT_OWNER_HEADERS)
+    accepted = client.post("/api/v1/cases", json=valid_intake(), headers={"Authorization": "Bearer valid-token"})
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 201
 
 
 def test_rejects_non_synthetic_data() -> None:
@@ -164,6 +215,36 @@ def test_synthetic_document_evidence_is_extracted_and_used_as_draft_context() ->
     assert drafted.status_code == 200
     assert drafted.json()["assessment_draft"]["evidence_document_ids"] == [evidence.json()["document_id"]]
     assert "jurisdictions=GB, US" in drafted.json()["assessment_draft"]["evidence_context"][0]
+
+
+def test_synthetic_text_upload_preserves_provenance_and_rejects_unsupported_types() -> None:
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    content = "Synthetic GB cross-border control report confirms sanctions screening."
+
+    uploaded = client.post(
+        f"/api/v1/cases/{case_id}/document-evidence/upload",
+        data={"title": "Synthetic uploaded control report", "document_type": "control_test", "is_synthetic": "true"},
+        files={"file": ("control-report.md", content.encode("utf-8"), "text/markdown")},
+    )
+    unsupported = client.post(
+        f"/api/v1/cases/{case_id}/document-evidence/upload",
+        data={"title": "Synthetic binary report", "document_type": "control_test", "is_synthetic": "true"},
+        files={"file": ("report.pdf", b"%PDF-synthetic", "application/pdf")},
+    )
+    unsafe_filename = client.post(
+        f"/api/v1/cases/{case_id}/document-evidence/upload",
+        data={"title": "Synthetic unsafe report", "document_type": "control_test", "is_synthetic": "true"},
+        files={"file": ("../control-report.txt", content.encode("utf-8"), "text/plain")},
+    )
+
+    assert uploaded.status_code == 201
+    assert uploaded.json()["ingestion_method"] == "uploaded_text"
+    assert uploaded.json()["original_filename"] == "control-report.md"
+    assert uploaded.json()["media_type"] == "text/markdown"
+    assert uploaded.json()["content_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert unsupported.status_code == 415
+    assert unsafe_filename.status_code == 422
 
 
 def test_case_events_form_a_hash_linked_audit_trail() -> None:
@@ -361,6 +442,27 @@ def test_assessment_draft_is_cited_and_does_not_make_a_decision() -> None:
     assert execution["citation_count"] == len(case["assessment_draft"]["citations"])
     assert execution["estimated_input_tokens"] > 0
     assert execution["estimated_output_tokens"] > 0
+
+
+def test_unconfigured_assessment_provider_records_failure_without_advancing_case(monkeypatch) -> None:
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    monkeypatch.setenv("AI_ADAPTER", "external-provider-v1")
+
+    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    case = client.get(f"/api/v1/cases/{case_id}").json()
+    executions = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS).json()
+    events = client.get(f"/api/v1/cases/{case_id}/audit-events").json()
+
+    assert response.status_code == 503
+    assert case["status"] == "analyst_review"
+    assert case["assessment_draft"] is None
+    assert executions[0]["status"] == "failed"
+    assert executions[0]["adapter"] == "external-provider-v1"
+    assert executions[0]["failure_reason"]
+    assert events[-1]["action"] == "assessment_draft_failed"
 
 
 def test_policy_source_register_contains_approved_synthetic_sources() -> None:

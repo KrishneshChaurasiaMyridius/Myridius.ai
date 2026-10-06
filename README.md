@@ -25,15 +25,27 @@ The first end-to-end slice supports a synthetic change request from product-owne
 
 The no-Docker API uses `raw.db`, a SQLite demo database with append-only audit events. It is excluded from source control. Container deployments use PostgreSQL through `DATABASE_URL`; the API container runs `alembic upgrade head` before it accepts traffic. Run the same command manually from `apps/api` after setting `DATABASE_URL` for controlled deployments.
 
-## Synthetic demo identities
+For an internet-facing production deployment, use HTTPS, private managed PostgreSQL, `AUTH_MODE=oidc`, exact production `CORS_ALLOWED_ORIGINS`, and platform readiness checks against `/ready`. The complete operator checklist is in [ops/runbook.md](ops/runbook.md).
 
-The workbench exposes synthetic identities to demonstrate role-based access control. Product owners create and submit their own cases; analysts assess, draft, override and verify conditions; committee members decide; auditors export evidence; administrators activate a new risk configuration. Production deployment must replace these seeded identities with an enterprise identity provider that supplies equivalent claims.
+## Identity modes
+
+`AUTH_MODE=demo` exposes synthetic identities for local role-based workflow demonstrations. Product owners create and submit their own cases; analysts assess, draft, override and verify conditions; committee members decide; auditors export evidence; administrators activate a new risk configuration.
+
+`AUTH_MODE=oidc` requires a bearer token validated against `OIDC_ISSUER`, `OIDC_AUDIENCE`, and `OIDC_JWKS_URL`. The configurable `OIDC_ROLE_CLAIM` defaults to `fcrm_role` and must contain one of the application role values. Demo `X-Actor-Id` headers are rejected in this mode. Configure those values through deployment secrets/environment configuration; the actor selector is only for the synthetic demo.
 
 ## Quality gates
 
-GitHub Actions runs the API workflow test suite, Python dependency audit, web type check and high-severity npm audit on pushes and pull requests.
+GitHub Actions runs SQLite and PostgreSQL Alembic migration smoke checks, PostgreSQL `CaseStore` initialization, the API workflow test suite, Python dependency audit, web type check and high-severity npm audit on pushes and pull requests.
 
 Run the repeatable synthetic end-to-end governance evaluation with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It verifies deterministic workflow progression, human-only draft authority, citation availability, persisted AI execution telemetry with estimated token usage, residual-risk floor enforcement, audit-chain integrity and a denied unauthorized transition.
+
+## AI adapter boundary
+
+`AI_ADAPTER=deterministic-mock-v1` is the supported local adapter. The API routes every assessment draft through a provider boundary and persists completed or failed attempts in the execution ledger. An unknown or unavailable adapter fails closed with the case remaining in analyst review; it cannot create a decision or advance the workflow. A production provider integration must implement this boundary, use deployment-managed credentials, and preserve the same retrieval, schema, and human-authority constraints.
+
+## Synthetic evidence ingestion
+
+Product owners can record structured synthetic text evidence or upload a UTF-8 synthetic `.txt` or `.md` document through `POST /api/v1/cases/{case_id}/document-evidence/upload`. Uploads are limited to 20,000 bytes, allow only `text/plain` and `text/markdown`, validate filenames, and receive a server-generated SHA-256 hash before the evidence record and audit event are persisted. PDFs, images, arbitrary binaries, OCR, malware scanning, object storage, and signed-download URLs are deliberately out of scope until the corresponding processing and security services are deployed.
 
 ## Repository layout
 
