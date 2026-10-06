@@ -9,9 +9,10 @@ flowchart LR
   API --> DB[(PostgreSQL)]
   API --> SCORE[Deterministic scoring]
   API --> ORCH[Assessment orchestrator]
-  ORCH --> AI[Mock AI adapter]
+  ORCH --> AI[Provider adapter boundary]
   ORCH --> POLICY[Approved policy corpus]
+  WEB --> E2E[Playwright browser workflow checks]
   API --> AUDIT[Append-only audit events]
 ```
 
-The workflow engine and scoring service are deterministic. The AI adapter may propose extracted facts, retrieval-backed rationale and gaps, but cannot mutate approved configuration, advance gated workflow states, or make committee decisions.
+The workflow engine and scoring service are deterministic. The default provider is a reproducible deterministic mock; an external provider must conform to the same typed adapter boundary and fails closed when unavailable or unconfigured. The AI adapter may propose extracted facts, retrieval-backed rationale and gaps, but cannot mutate approved configuration, advance gated workflow states, or make committee decisions.

@@ -35,7 +35,7 @@ For an internet-facing production deployment, use HTTPS, private managed Postgre
 
 ## Quality gates
 
-GitHub Actions runs SQLite and PostgreSQL Alembic migration smoke checks, PostgreSQL `CaseStore` initialization, the API workflow test suite, Python dependency audit, web type check and high-severity npm audit on pushes and pull requests.
+GitHub Actions runs SQLite and PostgreSQL Alembic migration smoke checks, PostgreSQL `CaseStore` initialization, the API workflow test suite, Python dependency audit, web type check, high-severity npm audit, and a Chromium Playwright smoke test that creates a synthetic case through the live workbench on pushes and pull requests.
 
 Run the repeatable synthetic end-to-end governance evaluation with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It verifies deterministic workflow progression, human-only draft authority, citation availability, persisted AI execution telemetry with estimated token usage, residual-risk floor enforcement, audit-chain integrity and a denied unauthorized transition.
 

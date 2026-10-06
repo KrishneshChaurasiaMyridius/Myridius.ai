@@ -15,6 +15,7 @@
 2. Start the workbench from `apps/web` with `npm.cmd run dev`.
 3. Use the identity selector to demonstrate separation of duties.
 4. Run `C:\Python313\python.exe evals\run_workflow_evaluation.py` from the repository root for a repeatable synthetic control check.
+5. With the API and workbench running, run `npm.cmd run test:e2e` from `apps/web` for the browser smoke test. In this local environment, use `PLAYWRIGHT_BROWSER_CHANNEL=msedge` when Playwright's managed Chromium cannot be downloaded because of trusted-network certificate interception.
 
 ## Container deployment
 
@@ -33,7 +34,7 @@
 4. Set `CORS_ALLOWED_ORIGINS` to the exact public HTTPS workbench origin, set `NEXT_PUBLIC_API_URL` to the public API URL, and set `AI_ADAPTER` only to a reviewed provider implementation. Use a secret manager for provider credentials when an external adapter is introduced.
 5. Build immutable API and web container images, push them to a private registry, deploy them with the production environment variables, and run Alembic once as a controlled release step. The API container also runs migrations at startup for this Compose deployment; use a one-off migration job in multi-replica production.
 6. Configure the platform health check to call `GET /ready` and liveness to call `GET /health`. `/ready` verifies database access and complete OIDC configuration without exposing secrets.
-7. Before opening public traffic, verify an OIDC login for each role, run the end-to-end workflow evaluator in a non-production synthetic environment, verify evidence export and audit integrity, and configure alerting on `/ready` failures, non-zero audit-chain failures, and elevated failed AI executions.
+7. Before opening public traffic, verify an OIDC login for each role, run the end-to-end workflow evaluator and the Playwright browser workflow in a non-production synthetic environment, verify evidence export and audit integrity, and configure alerting on `/ready` failures, non-zero audit-chain failures, and elevated failed AI executions.
 
 ## Incident response
 
