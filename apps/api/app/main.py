@@ -13,6 +13,7 @@ from time import perf_counter
 from typing import Annotated, Any, Callable, Literal, Protocol, Sequence
 from uuid import uuid4
 
+from anthropic import Anthropic
 import jwt
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -431,6 +432,52 @@ class DeterministicAssessmentProvider:
         )
 
 
+class AnthropicAssessmentProvider:
+    adapter_name = "anthropic-claude"
+
+    def __init__(self, api_key: str, model: str, max_tokens: int, timeout_seconds: float) -> None:
+        self.client = Anthropic(api_key=api_key, timeout=timeout_seconds)
+        self.model = model
+        self.max_tokens = max_tokens
+
+    def generate(self, case: "CaseDetail", retrieval_query: str, evidence_context: list[str]) -> GeneratedAssessment:
+        if not case.risk_assessment:
+            raise RuntimeError("Risk assessment is required before draft generation.")
+        prompt = json.dumps(
+            {
+                "task": "Draft analyst review material only. Do not approve, reject, route, or decide the case.",
+                "case": {
+                    "change_type": case.change_type,
+                    "inherent_risk": case.risk_assessment.inherent_risk,
+                    "residual_risk": case.residual_risk,
+                    "risk_rating": case.risk_assessment.rating,
+                },
+                "retrieval_query": retrieval_query,
+                "evidence_context": evidence_context,
+                "output_contract": {
+                    "summary": "string, concise analyst-facing assessment draft",
+                    "analyst_questions": ["one or more concrete analyst questions"],
+                },
+                "constraints": [
+                    "Use only the supplied synthetic case and evidence context.",
+                    "Return JSON only, with exactly summary and analyst_questions keys.",
+                    "Do not state or imply that a committee decision has been made.",
+                ],
+            }
+        )
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system="You produce bounded, human-review assessment drafts for a synthetic FCRM workflow.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
+            return GeneratedAssessment.model_validate_json(text)
+        except Exception as error:
+            raise RuntimeError("Anthropic assessment generation failed or returned invalid structured output.") from error
+
+
 class ProviderConfigurationError(RuntimeError):
     pass
 
@@ -439,6 +486,23 @@ def assessment_draft_provider() -> AssessmentDraftProvider:
     adapter = os.getenv("AI_ADAPTER", "deterministic-mock-v1")
     if adapter == "deterministic-mock-v1":
         return DeterministicAssessmentProvider()
+    if adapter == "anthropic-claude":
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ProviderConfigurationError("ANTHROPIC_API_KEY is required for the Anthropic assessment provider.")
+        try:
+            max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "1024"))
+            timeout_seconds = float(os.getenv("ANTHROPIC_TIMEOUT_SECONDS", "30"))
+        except ValueError as error:
+            raise ProviderConfigurationError("Anthropic token and timeout settings must be numeric.") from error
+        if not 256 <= max_tokens <= 4_096 or not 1 <= timeout_seconds <= 120:
+            raise ProviderConfigurationError("Anthropic token and timeout settings are outside approved bounds.")
+        return AnthropicAssessmentProvider(
+            api_key=api_key,
+            model=os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8"),
+            max_tokens=max_tokens,
+            timeout_seconds=timeout_seconds,
+        )
     raise ProviderConfigurationError(f"Assessment provider '{adapter}' is not configured.")
 
 
@@ -1469,6 +1533,7 @@ class CaseStore:
             evidence_context=evidence_context,
             retrieval_query=retrieval_query,
             prepared_at=datetime.now(timezone.utc),
+            generator=provider.adapter_name,
             execution_id=execution.execution_id,
         )
         updated = case.model_copy(update={"assessment_draft": draft, "version": case.version + 1})

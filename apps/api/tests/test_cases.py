@@ -465,6 +465,73 @@ def test_unconfigured_assessment_provider_records_failure_without_advancing_case
     assert events[-1]["action"] == "assessment_draft_failed"
 
 
+def test_anthropic_provider_uses_structured_draft_without_advancing_case(monkeypatch) -> None:
+    class TextBlock:
+        type = "text"
+        text = '{"summary":"Synthetic Claude draft for analyst review.","analyst_questions":["Confirm sanctions coverage."]}'
+
+    class Messages:
+        def create(self, **kwargs: object) -> object:
+            assert kwargs["model"] == "claude-opus-4-8"
+            assert kwargs["max_tokens"] == 1024
+            assert kwargs["messages"]
+            return type("Response", (), {"content": [TextBlock()]})()
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["api_key"] == "test-anthropic-key"
+            self.messages = Messages()
+
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    monkeypatch.setenv("AI_ADAPTER", "anthropic-claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setattr(main, "Anthropic", Client)
+
+    drafted = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+
+    assert drafted.status_code == 200
+    assert drafted.json()["status"] == "analyst_review"
+    assert drafted.json()["assessment_draft"]["summary"] == "Synthetic Claude draft for analyst review."
+    assert drafted.json()["assessment_draft"]["generator"] == "anthropic-claude"
+    execution = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS).json()[0]
+    assert execution["adapter"] == "anthropic-claude"
+
+
+def test_anthropic_provider_malformed_output_fails_closed(monkeypatch) -> None:
+    class TextBlock:
+        type = "text"
+        text = "This is not valid structured output."
+
+    class Messages:
+        def create(self, **kwargs: object) -> object:
+            return type("Response", (), {"content": [TextBlock()]})()
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            self.messages = Messages()
+
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    monkeypatch.setenv("AI_ADAPTER", "anthropic-claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setattr(main, "Anthropic", Client)
+
+    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    case = client.get(f"/api/v1/cases/{case_id}").json()
+    execution = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS).json()[0]
+
+    assert response.status_code == 503
+    assert case["status"] == "analyst_review"
+    assert case["assessment_draft"] is None
+    assert execution["adapter"] == "anthropic-claude"
+    assert execution["status"] == "failed"
+
+
 def test_policy_source_register_contains_approved_synthetic_sources() -> None:
     response = client.get("/api/v1/policy-sources")
 

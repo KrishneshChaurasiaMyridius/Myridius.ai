@@ -41,7 +41,7 @@ Run the repeatable synthetic end-to-end governance evaluation with `C:\Python313
 
 ## AI adapter boundary
 
-`AI_ADAPTER=deterministic-mock-v1` is the supported local adapter. The API routes every assessment draft through a provider boundary and persists completed or failed attempts in the execution ledger. An unknown or unavailable adapter fails closed with the case remaining in analyst review; it cannot create a decision or advance the workflow. A production provider integration must implement this boundary, use deployment-managed credentials, and preserve the same retrieval, schema, and human-authority constraints.
+`AI_ADAPTER=deterministic-mock-v1` is the supported local adapter. Set `AI_ADAPTER=anthropic-claude` only with the deployment-managed `ANTHROPIC_API_KEY`; `ANTHROPIC_MODEL` defaults to `claude-opus-4-8`, while output and request time are bounded by `ANTHROPIC_MAX_TOKENS` (256-4096) and `ANTHROPIC_TIMEOUT_SECONDS` (1-120). The Anthropic adapter accepts only structured JSON containing an analyst-facing summary and questions. The API routes every assessment draft through this provider boundary and persists completed or failed attempts in the execution ledger. An unknown, malformed, or unavailable adapter fails closed with the case remaining in analyst review; it cannot create a decision or advance the workflow.
 
 ## Synthetic evidence ingestion
 
