@@ -86,6 +86,20 @@ def test_cors_origins_are_configurable(monkeypatch) -> None:
     assert main.cors_allowed_origins() == ["https://workbench.example.test", "https://admin.example.test"]
 
 
+def test_cors_preflight_allows_oidc_authorization_header() -> None:
+    response = client.options(
+        "/api/v1/notifications",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
+
+
 def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -> None:
     class SigningKey:
         key = "test-public-key"
