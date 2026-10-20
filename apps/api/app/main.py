@@ -1508,9 +1508,14 @@ class CaseStore:
                         "failure_reason": failed_execution.failure_reason,
                     },
                 )
+            detail = (
+                str(error)
+                if isinstance(error, ProviderConfigurationError)
+                else "Assessment provider is unavailable; the case remains in analyst review."
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Assessment provider is unavailable; the case remains in analyst review.",
+                detail=detail,
             ) from error
         execution = AIExecution(
             execution_id=str(uuid4()),

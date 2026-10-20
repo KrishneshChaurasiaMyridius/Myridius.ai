@@ -471,6 +471,7 @@ def test_unconfigured_assessment_provider_records_failure_without_advancing_case
     events = client.get(f"/api/v1/cases/{case_id}/audit-events").json()
 
     assert response.status_code == 503
+    assert "external-provider-v1" in response.json()["detail"]
     assert case["status"] == "analyst_review"
     assert case["assessment_draft"] is None
     assert executions[0]["status"] == "failed"
