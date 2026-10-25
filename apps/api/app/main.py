@@ -168,7 +168,12 @@ def current_actor(
     actor_id = claims.get("sub")
     if not isinstance(actor_id, str) or not actor_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token requires a subject claim.")
-    display_name = claims.get("name") or claims.get("preferred_username") or actor_id
+    display_name = (
+        claims.get("https://myridius.ai/claims/display_name")
+        or claims.get("name")
+        or claims.get("preferred_username")
+        or actor_id
+    )
     if not isinstance(display_name, str):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC display-name claim must be text.")
     return Actor(actor_id=actor_id, display_name=display_name, role=role)

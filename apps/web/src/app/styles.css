@@ -12,6 +12,10 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: Georgia, "Times New Roman", serif; }
 main { max-width: 1240px; margin: 0 auto; padding: 42px 28px 72px; }
+.auth-gate { align-content: center; display: grid; gap: 12px; min-height: 70vh; max-width: 680px; }
+.auth-gate h1 { line-height: 1.15; }
+.auth-gate p:not(.eyebrow) { color: var(--muted); line-height: 1.6; }
+.auth-gate button { justify-self: start; }
 header, .summary, .content { display: flex; justify-content: space-between; gap: 28px; }
 header { align-items: flex-start; border-bottom: 2px solid var(--ink); padding-bottom: 25px; }
 .identity { align-items: flex-end; display: flex; flex-direction: column; gap: 10px; }

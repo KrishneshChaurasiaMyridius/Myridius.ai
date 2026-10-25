@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, ReactNode, useEffect, useState } from "react";
+import { FCRM_DISPLAY_NAME_CLAIM, FCRM_ROLE_CLAIM, useWorkbenchAuth } from "./auth-provider";
 
 type CaseStatus = "draft" | "intake_review" | "analyst_review" | "committee_decision" | "decided";
 type Case = {
@@ -50,6 +51,7 @@ const initialIntake = {
   attachment_urls: "https://example.test/synthetic-change-brief.pdf",
 };
 const riskFactors = ["customer", "product", "channel", "geography", "transaction", "third_party"] as const;
+const applicationRoles = ["product_owner", "analyst", "committee_member", "auditor", "administrator"];
 
 function asList(value: string) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -60,13 +62,26 @@ function stepFor(status: CaseStatus) {
 }
 
 export default function Home() {
+  const auth = useWorkbenchAuth();
   const [cases, setCases] = useState<Case[]>([]);
   const [activeCase, setActiveCase] = useState<Case | null>(null);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [riskConfiguration, setRiskConfiguration] = useState<RiskConfiguration | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
   const [actorId, setActorId] = useState("product-owner");
-  const activeActor = actors.find((actor) => actor.actor_id === actorId);
+  const roleClaim = auth.user?.[FCRM_ROLE_CLAIM];
+  const displayNameClaim = auth.user?.[FCRM_DISPLAY_NAME_CLAIM];
+  const authenticatedActor = auth.user?.sub && typeof roleClaim === "string" && applicationRoles.includes(roleClaim)
+    ? {
+        actor_id: auth.user.sub,
+        display_name: typeof displayNameClaim === "string"
+          ? displayNameClaim
+          : auth.user.name ?? auth.user.preferred_username ?? auth.user.email ?? auth.user.sub,
+        role: roleClaim,
+      }
+    : undefined;
+  const activeActor = auth.mode === "demo" ? actors.find((actor) => actor.actor_id === actorId) : authenticatedActor;
+  const identityReady = auth.mode === "demo" || (auth.configured && !auth.isLoading && auth.isAuthenticated && Boolean(activeActor));
   const [riskInput, setRiskInput] = useState({ customer: 4, product: 5, channel: 3, geography: 4, transaction: 5, third_party: 3, control_effectiveness: 2 });
   const [overrideInput, setOverrideInput] = useState({ residual_risk: 4, rationale: "Cross-border launch uncertainty warrants a higher residual-risk rating for committee review." });
   const [decisionInput, setDecisionInput] = useState({ decision: "approve_with_conditions", rationale: "Approval is appropriate once the specified control verification is completed.", description: "Verify sanctions-screening coverage before launch.", owner: "Taylor Product Owner", due_date: "2026-10-31T00:00", verification_criteria: "Provide a test report demonstrating coverage for GB and US payment routes." });
@@ -83,11 +98,12 @@ export default function Home() {
   const [notifications, setNotifications] = useState<WorkflowNotification[]>([]);
 
   async function request<T>(path: string, options?: RequestInit, protectedAction = false): Promise<T> {
+    const identityHeaders = protectedAction ? await protectedHeaders() : {};
     const response = await fetch(`${apiUrl}${path}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
-        ...(protectedAction ? { "X-Actor-Id": actorId } : {}),
+        ...identityHeaders,
         ...options?.headers,
       },
     });
@@ -96,6 +112,11 @@ export default function Home() {
       throw new Error(error.detail ?? "Workflow action failed.");
     }
     return response.json() as Promise<T>;
+  }
+
+  async function protectedHeaders(): Promise<Record<string, string>> {
+    if (auth.mode === "oidc") return { Authorization: `Bearer ${await auth.getAccessToken()}` };
+    return { "X-Actor-Id": actorId };
   }
 
   async function loadQueue() {
@@ -146,8 +167,13 @@ export default function Home() {
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to load case."); }
   }
 
-  useEffect(() => { void Promise.all([loadQueue(), loadRiskConfiguration(), loadActors(), loadPolicySources()]); }, []);
-  useEffect(() => { void loadNotifications(); }, [actorId]);
+  useEffect(() => {
+    if (!identityReady) return;
+    const loads = [loadQueue(), loadRiskConfiguration(), loadPolicySources()];
+    if (auth.mode === "demo") loads.push(loadActors());
+    void Promise.all(loads);
+  }, [identityReady, auth.mode]);
+  useEffect(() => { if (identityReady) void loadNotifications(); }, [actorId, identityReady, authenticatedActor?.actor_id]);
 
   async function createCase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -160,6 +186,7 @@ export default function Home() {
     try {
       const payload = {
         ...intake,
+        business_owner: auth.mode === "oidc" ? activeActor?.display_name ?? intake.business_owner : intake.business_owner,
         target_launch_date: new Date(intake.target_launch_date).toISOString(),
         jurisdictions: asList(intake.jurisdictions),
         delivery_channels: asList(intake.delivery_channels),
@@ -227,7 +254,7 @@ export default function Home() {
       payload.set("file", evidenceUpload);
       const response = await fetch(`${apiUrl}/api/v1/cases/${activeCase.case_id}/document-evidence/upload`, {
         method: "POST",
-        headers: { "X-Actor-Id": actorId },
+        headers: await protectedHeaders(),
         body: payload,
       });
       if (!response.ok) {
@@ -297,7 +324,7 @@ export default function Home() {
     if (!activeCase) return;
     setWorking(true);
     try {
-      const response = await fetch(`${apiUrl}/api/v1/cases/${activeCase.case_id}/evidence-package`, { headers: { "X-Actor-Id": actorId } });
+      const response = await fetch(`${apiUrl}/api/v1/cases/${activeCase.case_id}/evidence-package`, { headers: await protectedHeaders() });
       if (!response.ok) throw new Error("Evidence package could not be generated.");
       const packageData = await response.json();
       const file = new Blob([JSON.stringify(packageData, null, 2)], { type: "application/json" });
@@ -323,8 +350,15 @@ export default function Home() {
     const matchesSearch = `${item.case_id} ${item.title} ${item.change_type}`.toLowerCase().includes(queueSearch.toLowerCase());
     return matchesSearch && (queueStatus === "all" || item.status === queueStatus);
   });
+
+  if (auth.mode === "invalid") return <main className="auth-gate"><p className="eyebrow">WORKBENCH CONFIGURATION</p><h1>Authentication mode is invalid</h1><p>Set NEXT_PUBLIC_AUTH_MODE to either demo or oidc.</p></main>;
+  if (auth.mode === "oidc" && !auth.configured) return <main className="auth-gate"><p className="eyebrow">AUTH0 CONFIGURATION</p><h1>Sign-in is not configured</h1><p>Set NEXT_PUBLIC_AUTH0_DOMAIN, NEXT_PUBLIC_AUTH0_CLIENT_ID, and NEXT_PUBLIC_AUTH0_AUDIENCE in the frontend environment, then rebuild and redeploy.</p></main>;
+  if (auth.mode === "oidc" && auth.isLoading) return <main className="auth-gate"><p className="eyebrow">AUTH0</p><h1>Checking your session</h1></main>;
+  if (auth.mode === "oidc" && !auth.isAuthenticated) return <main className="auth-gate"><p className="eyebrow">SECURE WORKBENCH</p><h1>Risk Assessment Workbench</h1><p>Sign in with your assigned FCRM role to continue.</p><button type="button" onClick={() => void auth.login()}>Sign in</button></main>;
+  if (auth.mode === "oidc" && !activeActor) return <main className="auth-gate"><p className="eyebrow">ROLE CLAIM REQUIRED</p><h1>Your account has no valid FCRM role</h1><p>The ID token must include {FCRM_ROLE_CLAIM} with one of: {applicationRoles.join(", ")}.</p><button type="button" onClick={auth.logout}>Sign out</button></main>;
+
   return <main>
-    <header><div><p className="eyebrow">FCRM GOVERNED WORKFLOW</p><h1>Risk Assessment Workbench</h1></div><div className="identity"><span className="environment">SYNTHETIC DEMO</span><label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label></div></header>
+    <header><div><p className="eyebrow">FCRM GOVERNED WORKFLOW</p><h1>Risk Assessment Workbench</h1></div><div className="identity">{auth.mode === "demo" ? <><span className="environment">SYNTHETIC DEMO</span><label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label></> : <><span className="environment">OIDC AUTHENTICATED</span><span>{activeActor?.display_name} · {activeActor?.role.replaceAll("_", " ")}</span><button type="button" onClick={auth.logout}>Sign out</button></>}</div></header>
     <section className="demo-bar" aria-live="polite"><span>{message}</span></section>
     <section className="inbox"><div><p className="label">WORKFLOW INBOX</p><h2>{notifications.filter((notification) => !notification.read_at).length} open handoff(s)</h2></div>{notifications.length ? <ul>{notifications.slice(0, 5).map((notification) => <li className={notification.read_at ? "read" : "unread"} key={notification.notification_id}><div><strong>{notification.action.replaceAll("_", " ")}</strong><span>{notification.message} · {notification.case_id}</span></div>{notification.read_at ? <small>Acknowledged</small> : <button type="button" disabled={working} onClick={() => void acknowledgeNotification(notification)}>Open and acknowledge</button>}</li>)}</ul> : <p className="muted">No workflow handoffs for this role.</p>}</section>
     {riskConfiguration && <section className="configuration"><div><p className="label">ACTIVE SCORING CONFIGURATION</p><h2>{riskConfiguration.version}</h2><p className="muted">Updated by {riskConfiguration.updated_by} · {new Date(riskConfiguration.updated_at).toLocaleDateString()}</p></div><dl><div><dt>Factor weights</dt><dd>{Object.entries(riskConfiguration.factor_weights).map(([factor, weight]) => `${factor}: ${weight}`).join(" · ")}</dd></div><div><dt>Residual-risk floor</dt><dd>1 / 5</dd></div><div><dt>Rating bands</dt><dd>Low ≤ {riskConfiguration.low_risk_maximum}; moderate ≤ {riskConfiguration.moderate_risk_maximum}</dd></div><div><dt>Control mitigation</dt><dd>Effectiveness ÷ {riskConfiguration.control_mitigation_divisor}</dd></div></dl></section>}

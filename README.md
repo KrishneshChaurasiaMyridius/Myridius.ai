@@ -29,9 +29,13 @@ For an internet-facing production deployment, use HTTPS, private managed Postgre
 
 ## Identity modes
 
-`AUTH_MODE=demo` exposes synthetic identities for local role-based workflow demonstrations. Product owners create and submit their own cases; analysts assess, draft, override and verify conditions; committee members decide; auditors export evidence; administrators activate a new risk configuration.
+`AUTH_MODE=demo` on the API and `NEXT_PUBLIC_AUTH_MODE=demo` on the workbench expose synthetic identities for local role-based workflow demonstrations. Product owners create and submit their own cases; analysts assess, draft, override and verify conditions; committee members decide; auditors export evidence; administrators activate a new risk configuration. Demo mode remains the frontend default for local development.
 
-`AUTH_MODE=oidc` requires a bearer token validated against `OIDC_ISSUER`, `OIDC_AUDIENCE`, and `OIDC_JWKS_URL`. The configurable `OIDC_ROLE_CLAIM` defaults to `fcrm_role` and must contain one of the application role values. Demo `X-Actor-Id` headers are rejected in this mode. Configure those values through deployment secrets/environment configuration; the actor selector is only for the synthetic demo.
+`NEXT_PUBLIC_AUTH_MODE=oidc` enables Auth0 authorization-code login with PKCE. Set `NEXT_PUBLIC_AUTH0_DOMAIN`, `NEXT_PUBLIC_AUTH0_CLIENT_ID`, `NEXT_PUBLIC_AUTH0_AUDIENCE` (the Auth0 API Identifier), and `NEXT_PUBLIC_API_URL` in Vercel. The browser sends the Auth0 API access token as a bearer token for every actor-protected request, including uploads and evidence export. The frontend fails closed when OIDC is selected but required public configuration is missing; it does not expose the demo actor selector.
+
+Configure the Auth0 Post Login Action to put `https://myridius.ai/claims/fcrm_role` and `https://myridius.ai/claims/display_name` in both the access token and ID token. The role claim must contain exactly one of `product_owner`, `analyst`, `committee_member`, `auditor`, or `administrator`; the display-name claim should use the user’s assigned workbench name. The workbench reads these ID-token claims for role-gated controls and intake attribution; the API independently validates the access-token claims. On Render set `AUTH_MODE=oidc`, `OIDC_ISSUER` to the Auth0 issuer URL, `OIDC_AUDIENCE` to the same API Identifier, `OIDC_JWKS_URL` to `https://<auth0-domain>/.well-known/jwks.json`, and `OIDC_ROLE_CLAIM=https://myridius.ai/claims/fcrm_role`. Also set `CORS_ALLOWED_ORIGINS` to the exact Vercel origin without a trailing slash. Never put an Auth0 client secret in the browser or repository.
+
+For the current deployment, register `https://myridius-ai-ye2b-one.vercel.app` and `http://localhost:3000` as Auth0 Allowed Callback URLs, Allowed Logout URLs, and Allowed Web Origins. Deploy and verify the OIDC-enabled frontend before switching the Render API from demo mode; the API will reject demo headers once OIDC mode is active.
 
 ## Quality gates
 

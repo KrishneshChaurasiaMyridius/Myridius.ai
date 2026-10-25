@@ -101,6 +101,9 @@ def test_cors_preflight_allows_oidc_authorization_header() -> None:
 
 
 def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -> None:
+    role_claim = "https://myridius.ai/claims/fcrm_role"
+    display_name_claim = "https://myridius.ai/claims/display_name"
+
     class SigningKey:
         key = "test-public-key"
 
@@ -117,17 +120,24 @@ def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -
         assert key == "test-public-key"
         assert kwargs["audience"] == "risk-workbench"
         assert kwargs["issuer"] == "https://identity.example.test"
-        return {"sub": "oidc-product-owner", "name": "Taylor Product Owner", "fcrm_role": "product_owner"}
+        return {
+            "sub": "oidc-product-owner",
+            display_name_claim: "Krishnesh Chaurasia",
+            role_claim: "product_owner",
+        }
 
     monkeypatch.setenv("AUTH_MODE", "oidc")
     monkeypatch.setenv("OIDC_ISSUER", "https://identity.example.test")
     monkeypatch.setenv("OIDC_AUDIENCE", "risk-workbench")
     monkeypatch.setenv("OIDC_JWKS_URL", "https://identity.example.test/keys")
+    monkeypatch.setenv("OIDC_ROLE_CLAIM", role_claim)
     monkeypatch.setattr(main.jwt, "PyJWKClient", JwksClient)
     monkeypatch.setattr(main.jwt, "decode", decode)
 
     rejected = client.post("/api/v1/cases", json=valid_intake(), headers=PRODUCT_OWNER_HEADERS)
-    accepted = client.post("/api/v1/cases", json=valid_intake(), headers={"Authorization": "Bearer valid-token"})
+    oidc_intake = valid_intake()
+    oidc_intake["business_owner"] = "Krishnesh Chaurasia"
+    accepted = client.post("/api/v1/cases", json=oidc_intake, headers={"Authorization": "Bearer valid-token"})
 
     assert rejected.status_code == 401
     assert accepted.status_code == 201
