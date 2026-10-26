@@ -78,7 +78,7 @@ const riskFactors = ["customer", "product", "channel", "geography", "transaction
 const applicationRoles = ["product_owner", "analyst", "committee_member", "auditor", "administrator"];
 
 function IntakeField({ label, help, children, className }: { label: string; help: string; children: ReactNode; className?: string }) {
-  return <label className={className}><span className="field-label-row"><span>{label}</span><details className="field-tip"><summary aria-label={`Field guidance for ${label}`} title={label}>i</summary><span role="tooltip">{help}</span></details></span>{children}</label>;
+  return <label className={className}><span className="field-label-row"><span>{label}</span><details className="field-tip"><summary aria-label={`Field guidance for ${label}`}>i</summary><span role="tooltip">{help}</span></details></span>{children}</label>;
 }
 
 function asList(value: string) {

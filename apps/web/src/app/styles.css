@@ -83,7 +83,7 @@ main [id] { scroll-margin-top: 78px; }
 .field-tip summary { align-items: center; border: 1px solid #9ca9a2; border-radius: 50%; color: var(--muted); cursor: pointer; display: inline-flex; font-size: .65rem; font-weight: 700; height: 16px; justify-content: center; list-style: none; width: 16px; }
 .field-tip summary::-webkit-details-marker { display: none; }
 .field-tip [role="tooltip"] { background: var(--ink); box-shadow: 0 4px 14px #12211d22; color: white; display: none; font-size: .75rem; font-weight: 400; left: 0; line-height: 1.45; min-width: 210px; padding: 9px 11px; position: absolute; top: 22px; width: min(280px, 80vw); z-index: 10; }
-.field-tip[open] [role="tooltip"] { display: block; }
+.field-tip[open] [role="tooltip"], .field-tip:hover [role="tooltip"], .field-tip:focus-within [role="tooltip"] { display: block; }
 .intake-form input, .intake-form select, .intake-form textarea { background: #fbfcf9; border: 1px solid var(--line); border-radius: 0; color: var(--ink); font: .9rem var(--font-ui); min-width: 0; padding: 9px; width: 100%; }
 .intake-form textarea { min-height: 80px; resize: vertical; }
 .intake-form input[readonly] { background: #eef2ef; color: var(--ink); }
