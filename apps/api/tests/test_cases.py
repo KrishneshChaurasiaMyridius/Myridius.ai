@@ -637,7 +637,10 @@ def test_anthropic_provider_uses_structured_draft_without_advancing_case(monkeyp
     class Messages:
         def create(self, **kwargs: object) -> object:
             assert kwargs["model"] == "claude-opus-4-8"
-            assert kwargs["max_tokens"] == 2048
+            assert kwargs["max_tokens"] == 4096
+            schema = kwargs["extra_body"]["output_config"]["format"]["schema"]
+            assert schema["additionalProperties"] is False
+            assert "analyst_questions" in schema["required"]
             assert kwargs["messages"]
             prompt = kwargs["messages"][0]["content"]
             assert "scoring_configuration" in prompt
@@ -725,6 +728,35 @@ def test_anthropic_provider_malformed_output_fails_closed(monkeypatch) -> None:
     assert "not valid JSON" in execution["failure_reason"]
 
 
+def test_anthropic_max_tokens_stop_is_reported_as_output_limit(monkeypatch) -> None:
+    class TextBlock:
+        type = "text"
+        text = '{"summary":"Incomplete'
+
+    class Messages:
+        def create(self, **kwargs: object) -> object:
+            return type("Response", (), {"content": [TextBlock()], "stop_reason": "max_tokens"})()
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            self.messages = Messages()
+
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    monkeypatch.setenv("AI_ADAPTER", "anthropic-claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setattr(main, "Anthropic", Client)
+
+    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    execution = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS).json()[0]
+
+    assert response.status_code == 503
+    assert "output-token limit" in response.json()["detail"]
+    assert "output-token limit" in execution["failure_reason"]
+
+
 def test_anthropic_schema_error_reports_missing_field_without_model_output() -> None:
     try:
         main.GeneratedAssessment.model_validate_json('{"summary":"Synthetic summary"}')
@@ -735,6 +767,13 @@ def test_anthropic_schema_error_reports_missing_field_without_model_output() -> 
 
     assert "analyst_questions" in reason
     assert "Synthetic summary" not in reason
+
+
+def test_anthropic_output_limit_has_specific_failure_reason() -> None:
+    reason = main.anthropic_failure_reason(main.AnthropicOutputLimitError())
+
+    assert "output-token limit" in reason
+    assert "4096" in reason
 
 
 def test_anthropic_api_error_is_diagnosable_without_exposing_raw_error(monkeypatch) -> None:

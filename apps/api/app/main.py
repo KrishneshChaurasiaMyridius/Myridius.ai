@@ -538,7 +538,53 @@ class ProviderExecutionError(RuntimeError):
     pass
 
 
+class AnthropicOutputLimitError(RuntimeError):
+    pass
+
+
+def generated_assessment_json_schema() -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "summary": {"type": "string"},
+        "risk_factor_analysis": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "factor": {"type": "string"},
+                    "score": {"type": "integer"},
+                    "ai_suggested_score": {"type": ["integer", "null"]},
+                    "rationale": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["factor", "score", "ai_suggested_score", "rationale", "evidence_refs"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    properties.update(
+        {
+            field: {"type": "array", "items": {"type": "string"}}
+            for field in (
+                "control_observations",
+                "discrepancies",
+                "risk_signals",
+                "research_steps",
+                "evidence_gaps",
+                "analyst_questions",
+            )
+        }
+    )
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
 def anthropic_failure_reason(error: Exception) -> str:
+    if isinstance(error, AnthropicOutputLimitError):
+        return "Anthropic reached the configured output-token limit; increase ANTHROPIC_MAX_TOKENS (up to 4096) and retry."
     status_code = getattr(error, "status_code", None)
     if isinstance(status_code, int):
         if status_code == 401:
@@ -653,7 +699,17 @@ class AnthropicAssessmentProvider:
                 max_tokens=self.max_tokens,
                 system="You are an analyst copilot for a synthetic FCRM workflow. Produce careful, source-grounded review material for a human analyst. You have no decision or workflow authority.",
                 messages=[{"role": "user", "content": prompt}],
+                extra_body={
+                    "output_config": {
+                        "format": {
+                            "type": "json_schema",
+                            "schema": generated_assessment_json_schema(),
+                        }
+                    }
+                },
             )
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                raise AnthropicOutputLimitError("Anthropic reached the configured output-token limit.")
             text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
             generated = GeneratedAssessment.model_validate_json(text)
             usage = getattr(response, "usage", None)
@@ -678,7 +734,7 @@ def assessment_draft_provider() -> AssessmentDraftProvider:
         if not api_key:
             raise ProviderConfigurationError("ANTHROPIC_API_KEY is required for the Anthropic assessment provider.")
         try:
-            max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "2048"))
+            max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "4096"))
             timeout_seconds = float(os.getenv("ANTHROPIC_TIMEOUT_SECONDS", "30"))
         except ValueError as error:
             raise ProviderConfigurationError("Anthropic token and timeout settings must be numeric.") from error
