@@ -6,11 +6,11 @@ The workbench prepares an assessment; authorised humans make every risk and appr
 
 ## Current implementation
 
-The `assessment-draft` API is a deterministic mock adapter. It produces a review-only summary, analyst questions and visible citations. Its response carries `decision_authority: human_only` and it cannot alter a case status, risk configuration or committee outcome.
+The default `assessment-draft` API adapter is deterministic. The optional Anthropic adapter receives the complete synthetic intake, deterministic risk-factor inputs and configuration snapshot, bounded evidence excerpts, and approved policy excerpts. It produces a structured analyst brief containing a summary, factor-level rationale, control observations, evidence gaps, and analyst questions. The API remains authoritative for deterministic scores and citations, validates evidence references against the case, and marks the response `decision_authority: human_only`.
 
-Every draft attempt runs through an explicit provider adapter boundary. Completed and failed attempts both create immutable execution ledger entries containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, duration, completion time, and a failure reason when applicable. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
+Every draft attempt runs through an explicit provider adapter boundary. Completed and failed attempts both create immutable execution ledger entries containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, provider-reported token counts when available, duration, completion time, and a failure reason when applicable. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
 
-Policy text is also governed independently of drafting. An administrator may register a synthetic policy source, but the source remains pending review and is excluded from retrieval until a committee member explicitly approves it. Retirement removes a source from future retrieval while preserving its audit history.
+Policy text is also governed independently of drafting. An administrator may register a policy source and a committee member must explicitly approve it. Non-synthetic policy sources require a source URL. In OIDC mode, synthetic seed entries are excluded from retrieval, and drafting fails closed if no approved, non-synthetic source matches. Retirement removes a source from future retrieval while preserving its audit history.
 
 | Stage | System action | Human gate |
 | --- | --- | --- |
@@ -21,8 +21,8 @@ Policy text is also governed independently of drafting. An administrator may reg
 
 ## Failure behavior
 
-If a draft provider is unconfigured or cannot prepare a draft, the case remains in analyst review and the failure is recorded in both the execution ledger and hash-linked audit trail. It cannot advance automatically. The API records an audit event for every successful material action, and audit events are hash-linked by case.
+If a draft provider is unconfigured, returns unsupported deterministic scores or evidence references, or cannot prepare a draft, the case remains in analyst review and the failure is recorded in both the execution ledger and hash-linked audit trail. It cannot advance automatically. The API records an audit event for every successful material action, and audit events are hash-linked by case.
 
 ## Scope note
 
-The included FATF and internal-policy citations are demo artifacts. The regulatory source register and governed corpus ingestion remain required before a production deployment.
+The included FATF-labelled and internal-policy citations are synthetic demo artifacts. They are not retrieved in OIDC mode. A production deployment still requires regulatory-owner review, source versioning, and an agreed corpus update and retirement process.

@@ -19,3 +19,20 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
   await expect(page.getByRole("heading", { name: /Synthetic browser workflow case/ })).toBeVisible();
   expect(actorHeaders).toContain("product-owner");
 });
+
+test("analyst reviews deterministic scores and structured assessment draft", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Change title").fill("Synthetic analyst review workflow case");
+  await page.getByRole("button", { name: "Create synthetic intake" }).click();
+  await page.getByRole("button", { name: "Submit for intake review" }).click();
+
+  await page.getByLabel("Acting as").selectOption("analyst");
+  await page.getByRole("button", { name: "Run risk assessment" }).click();
+  await expect(page.getByRole("heading", { name: "Analyst recommendation" })).toBeVisible();
+  await page.getByRole("button", { name: "Prepare cited draft" }).click();
+
+  await expect(page.getByRole("heading", { name: "Risk factor analysis" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Control observations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Evidence gaps" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Approved source excerpts" })).toBeVisible();
+});

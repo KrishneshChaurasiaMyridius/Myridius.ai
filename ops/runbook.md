@@ -3,7 +3,7 @@
 ## Service health
 
 - `GET /health` confirms that the API process is accepting requests.
-- `GET /api/v1/operations/metrics` requires an auditor or administrator actor. It reports case distribution, audit-event volume, hash-chain failures, active risk configuration and approved policy-source count.
+- `GET /api/v1/operations/metrics` requires an auditor or administrator actor. It reports case distribution, audit-event volume, hash-chain failures, active risk configuration, policy-source count, estimated AI tokens, and provider-reported AI tokens when available.
 - Every API response includes `X-Request-Id`. Supply that header when calling the API or capture the generated value from the response, then use it to locate the JSON request-completion event in service logs.
 - `GET /api/v1/cases/{case_id}/document-evidence/{document_id}/integrity` verifies a stored evidence record's server-generated SHA-256 fingerprint and byte count. A false result is a stop-the-line evidence-integrity incident.
 - New policy sources are registered by an administrator and require committee approval through `POST /api/v1/policy-sources/{source_id}/approve` before they can be retrieved for draft citations.
@@ -37,7 +37,9 @@
 5. Set Render `AUTH_MODE=oidc`, `OIDC_ISSUER`, `OIDC_AUDIENCE`, `OIDC_JWKS_URL`, `OIDC_ROLE_CLAIM=https://myridius.ai/claims/fcrm_role`, and exact `CORS_ALLOWED_ORIGINS`; set `AI_ADAPTER` only to a reviewed provider implementation. Use a secret manager for provider credentials when an external adapter is introduced.
 6. Build immutable API and web container images, push them to a private registry, deploy them with the production environment variables, and run Alembic once as a controlled release step. The API container also runs migrations at startup for this Compose deployment; use a one-off migration job in multi-replica production.
 7. Configure the platform health check to call `GET /ready` and liveness to call `GET /health`. `/ready` verifies database access and complete OIDC configuration without exposing secrets.
-8. Before opening public traffic, verify an OIDC login for each role, run the end-to-end workflow evaluator and the Playwright browser workflow in a non-production synthetic environment, verify evidence export and audit integrity, and configure alerting on `/ready` failures, non-zero audit-chain failures, and elevated failed AI executions.
+8. Before enabling production assessment drafting, register source-linked, non-synthetic policy excerpts with an administrator account and approve each with a committee account. Confirm the approved sources are current and within scope; OIDC mode deliberately excludes seeded synthetic sources and drafting will fail closed if none match.
+9. Set `AI_ADAPTER=anthropic-claude` only after the model, prompt version, request/token limits, provider retention terms, and cost controls are approved. Store `ANTHROPIC_API_KEY` in the deployment secret manager. Validate the structured output and provider-reported usage against the synthetic evaluation set; confirm unsupported scores or evidence references fail closed.
+10. Before opening public traffic, verify an OIDC login for each role, run the end-to-end workflow evaluator and the Playwright browser workflow in a non-production synthetic environment, verify evidence export and audit integrity, and configure alerting on `/ready` failures, non-zero audit-chain failures, and elevated failed AI executions. Review actual and estimated token metrics separately after the pilot.
 
 ## Incident response
 

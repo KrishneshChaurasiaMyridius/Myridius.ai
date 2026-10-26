@@ -23,4 +23,4 @@ Reduce a new-product or material-change financial-crime risk assessment from 15-
 
 ## Scope boundary
 
-The MVP uses synthetic data only and makes no connection to bank systems, identity providers or real customer information.
+The MVP uses synthetic case and evidence data only. OIDC authentication is supported through a configured identity provider, but the workbench does not connect to bank systems or ingest real customer information. Non-synthetic policy excerpts may be registered with source URLs and require committee approval; they are a separate governed corpus, not case/customer data.
