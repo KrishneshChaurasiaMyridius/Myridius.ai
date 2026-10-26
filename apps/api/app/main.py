@@ -539,7 +539,9 @@ class ProviderExecutionError(RuntimeError):
 
 
 class AnthropicOutputLimitError(RuntimeError):
-    pass
+    def __init__(self, max_tokens: int) -> None:
+        self.max_tokens = max_tokens
+        super().__init__(f"Anthropic reached the configured output-token limit of {max_tokens} tokens.")
 
 
 def generated_assessment_json_schema() -> dict[str, Any]:
@@ -584,7 +586,15 @@ def generated_assessment_json_schema() -> dict[str, Any]:
 
 def anthropic_failure_reason(error: Exception) -> str:
     if isinstance(error, AnthropicOutputLimitError):
-        return "Anthropic reached the configured output-token limit; increase ANTHROPIC_MAX_TOKENS (up to 4096) and retry."
+        if error.max_tokens < 4_096:
+            return (
+                f"Anthropic reached the configured output-token limit of {error.max_tokens} tokens; "
+                "set ANTHROPIC_MAX_TOKENS to 4096 and retry."
+            )
+        return (
+            "Anthropic reached the maximum output-token limit of 4096; reduce evidence context or ask for "
+            "shorter analyst notes, then retry."
+        )
     status_code = getattr(error, "status_code", None)
     if isinstance(status_code, int):
         if status_code == 401:
@@ -687,6 +697,7 @@ class AnthropicAssessmentProvider:
                     "Do not invent policy requirements, evidence, facts, or citations.",
                     "Return JSON only, with exactly the keys shown in output_contract.",
                     "Return one risk_factor_analysis item per supplied factor and preserve its deterministic score.",
+                    "Keep the summary and rationales concise; limit each list to at most three short, actionable items.",
                     "Compare stated jurisdictions, controls, customer exposure, payment characteristics, channels, and third parties against evidence; describe only verifiable discrepancies.",
                     "Treat risk signals as investigative leads, not conclusions or allegations of malpractice.",
                     "Do not state or imply that a committee decision has been made.",
@@ -709,7 +720,7 @@ class AnthropicAssessmentProvider:
                 },
             )
             if getattr(response, "stop_reason", None) == "max_tokens":
-                raise AnthropicOutputLimitError("Anthropic reached the configured output-token limit.")
+                raise AnthropicOutputLimitError(self.max_tokens)
             text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
             generated = GeneratedAssessment.model_validate_json(text)
             usage = getattr(response, "usage", None)

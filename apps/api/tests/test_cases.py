@@ -770,10 +770,13 @@ def test_anthropic_schema_error_reports_missing_field_without_model_output() -> 
 
 
 def test_anthropic_output_limit_has_specific_failure_reason() -> None:
-    reason = main.anthropic_failure_reason(main.AnthropicOutputLimitError())
+    reason = main.anthropic_failure_reason(main.AnthropicOutputLimitError(1024))
+    at_maximum = main.anthropic_failure_reason(main.AnthropicOutputLimitError(4096))
 
-    assert "output-token limit" in reason
-    assert "4096" in reason
+    assert "output-token limit of 1024 tokens" in reason
+    assert "set ANTHROPIC_MAX_TOKENS to 4096" in reason
+    assert "maximum output-token limit of 4096" in at_maximum
+    assert "reduce evidence context" in at_maximum
 
 
 def test_anthropic_api_error_is_diagnosable_without_exposing_raw_error(monkeypatch) -> None:
