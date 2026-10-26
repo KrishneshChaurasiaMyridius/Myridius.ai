@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, ReactNode, useEffect, useState } from "react";
-import { FCRM_DISPLAY_NAME_CLAIM, FCRM_ROLE_CLAIM, useWorkbenchAuth } from "./auth-provider";
+import { FCRM_ROLE_CLAIM, useWorkbenchAuth } from "./auth-provider";
 
 type CaseStatus = "draft" | "intake_review" | "analyst_review" | "committee_decision" | "decided";
 type Case = {
@@ -68,19 +68,11 @@ export default function Home() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [riskConfiguration, setRiskConfiguration] = useState<RiskConfiguration | null>(null);
   const [actors, setActors] = useState<Actor[]>([]);
+  const [oidcActor, setOidcActor] = useState<Actor | null>(null);
+  const [oidcIdentityLoading, setOidcIdentityLoading] = useState(true);
+  const [oidcIdentityError, setOidcIdentityError] = useState("");
   const [actorId, setActorId] = useState("product-owner");
-  const roleClaim = auth.user?.[FCRM_ROLE_CLAIM];
-  const displayNameClaim = auth.user?.[FCRM_DISPLAY_NAME_CLAIM];
-  const authenticatedActor = auth.user?.sub && typeof roleClaim === "string" && applicationRoles.includes(roleClaim)
-    ? {
-        actor_id: auth.user.sub,
-        display_name: typeof displayNameClaim === "string"
-          ? displayNameClaim
-          : auth.user.name ?? auth.user.preferred_username ?? auth.user.email ?? auth.user.sub,
-        role: roleClaim,
-      }
-    : undefined;
-  const activeActor = auth.mode === "demo" ? actors.find((actor) => actor.actor_id === actorId) : authenticatedActor;
+  const activeActor = auth.mode === "demo" ? actors.find((actor) => actor.actor_id === actorId) : oidcActor ?? undefined;
   const identityReady = auth.mode === "demo" || (auth.configured && !auth.isLoading && auth.isAuthenticated && Boolean(activeActor));
   const [riskInput, setRiskInput] = useState({ customer: 4, product: 5, channel: 3, geography: 4, transaction: 5, third_party: 3, control_effectiveness: 2 });
   const [overrideInput, setOverrideInput] = useState({ residual_risk: 4, rationale: "Cross-border launch uncertainty warrants a higher residual-risk rating for committee review." });
@@ -168,12 +160,49 @@ export default function Home() {
   }
 
   useEffect(() => {
+    if (auth.mode !== "oidc") {
+      setOidcActor(null);
+      setOidcIdentityError("");
+      setOidcIdentityLoading(false);
+      return;
+    }
+    if (auth.isLoading) return;
+    if (!auth.isAuthenticated) {
+      setOidcActor(null);
+      setOidcIdentityError("");
+      setOidcIdentityLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setOidcIdentityLoading(true);
+    void request<Actor>("/api/v1/identity/me", undefined, true)
+      .then((actor) => {
+        if (!cancelled) {
+          setOidcActor(actor);
+          setOidcIdentityError("");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setOidcActor(null);
+          setOidcIdentityError(error instanceof Error ? error.message : "Unable to validate your workbench identity.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setOidcIdentityLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [auth.mode, auth.isLoading, auth.isAuthenticated]);
+
+  useEffect(() => {
     if (!identityReady) return;
     const loads = [loadQueue(), loadRiskConfiguration(), loadPolicySources()];
     if (auth.mode === "demo") loads.push(loadActors());
     void Promise.all(loads);
   }, [identityReady, auth.mode]);
-  useEffect(() => { if (identityReady) void loadNotifications(); }, [actorId, identityReady, authenticatedActor?.actor_id]);
+  useEffect(() => { if (identityReady) void loadNotifications(); }, [actorId, identityReady, oidcActor?.actor_id]);
 
   async function createCase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -353,9 +382,9 @@ export default function Home() {
 
   if (auth.mode === "invalid") return <main className="auth-gate"><p className="eyebrow">WORKBENCH CONFIGURATION</p><h1>Authentication mode is invalid</h1><p>Set NEXT_PUBLIC_AUTH_MODE to either demo or oidc.</p></main>;
   if (auth.mode === "oidc" && !auth.configured) return <main className="auth-gate"><p className="eyebrow">AUTH0 CONFIGURATION</p><h1>Sign-in is not configured</h1><p>Set NEXT_PUBLIC_AUTH0_DOMAIN, NEXT_PUBLIC_AUTH0_CLIENT_ID, and NEXT_PUBLIC_AUTH0_AUDIENCE in the frontend environment, then rebuild and redeploy.</p></main>;
-  if (auth.mode === "oidc" && auth.isLoading) return <main className="auth-gate"><p className="eyebrow">AUTH0</p><h1>Checking your session</h1></main>;
+  if (auth.mode === "oidc" && (auth.isLoading || oidcIdentityLoading)) return <main className="auth-gate"><p className="eyebrow">AUTH0</p><h1>Checking your session</h1></main>;
   if (auth.mode === "oidc" && !auth.isAuthenticated) return <main className="auth-gate"><p className="eyebrow">SECURE WORKBENCH</p><h1>Risk Assessment Workbench</h1><p>Sign in with your assigned FCRM role to continue.</p><button type="button" onClick={() => void auth.login()}>Sign in</button></main>;
-  if (auth.mode === "oidc" && !activeActor) return <main className="auth-gate"><p className="eyebrow">ROLE CLAIM REQUIRED</p><h1>Your account has no valid FCRM role</h1><p>The ID token must include {FCRM_ROLE_CLAIM} with one of: {applicationRoles.join(", ")}.</p><button type="button" onClick={auth.logout}>Sign out</button></main>;
+  if (auth.mode === "oidc" && !activeActor) return <main className="auth-gate"><p className="eyebrow">IDENTITY NOT AUTHORIZED</p><h1>Could not validate your workbench identity</h1><p>{oidcIdentityError || `The API token must include ${FCRM_ROLE_CLAIM} with one of: ${applicationRoles.join(", ")}.`}</p><button type="button" onClick={auth.logout}>Sign out</button></main>;
 
   return <main>
     <header><div><p className="eyebrow">FCRM GOVERNED WORKFLOW</p><h1>Risk Assessment Workbench</h1></div><div className="identity">{auth.mode === "demo" ? <><span className="environment">SYNTHETIC DEMO</span><label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label></> : <><span className="environment">OIDC AUTHENTICATED</span><span>{activeActor?.display_name} · {activeActor?.role.replaceAll("_", " ")}</span><button type="button" onClick={auth.logout}>Sign out</button></>}</div></header>

@@ -135,11 +135,18 @@ def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -
     monkeypatch.setattr(main.jwt, "decode", decode)
 
     rejected = client.post("/api/v1/cases", json=valid_intake(), headers=PRODUCT_OWNER_HEADERS)
+    identity = client.get("/api/v1/identity/me", headers={"Authorization": "Bearer valid-token"})
     oidc_intake = valid_intake()
-    oidc_intake["business_owner"] = "Krishnesh Chaurasia"
+    oidc_intake["business_owner"] = identity.json()["display_name"]
     accepted = client.post("/api/v1/cases", json=oidc_intake, headers={"Authorization": "Bearer valid-token"})
 
     assert rejected.status_code == 401
+    assert identity.status_code == 200
+    assert identity.json() == {
+        "actor_id": "oidc-product-owner",
+        "display_name": "Krishnesh Chaurasia",
+        "role": "product_owner",
+    }
     assert accepted.status_code == 201
 
 

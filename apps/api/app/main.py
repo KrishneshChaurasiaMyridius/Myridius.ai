@@ -1822,6 +1822,11 @@ def list_demo_actors() -> list[Actor]:
     return list(DEMO_ACTORS.values())
 
 
+@app.get("/api/v1/identity/me", response_model=Actor, tags=["identity"])
+def get_current_identity(actor: Annotated[Actor, Depends(current_actor)]) -> Actor:
+    return actor
+
+
 @app.get("/api/v1/notifications", response_model=list[WorkflowNotification], tags=["workflow"])
 def list_notifications(actor: Annotated[Actor, Depends(current_actor)]) -> list[WorkflowNotification]:
     return case_store.notifications(actor)
