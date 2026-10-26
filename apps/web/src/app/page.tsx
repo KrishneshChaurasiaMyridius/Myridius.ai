@@ -405,11 +405,11 @@ export default function Home() {
 
   const currentStep = activeCase ? stepFor(activeCase.status) : -1;
   const roleNavigation: { label: string; target: string }[] = {
-    product_owner: [{ label: "Inbox", target: "work-inbox" }, { label: "New intake", target: "product-intake" }, { label: "Evidence & case", target: "case-workspace" }, { label: "My cases", target: "case-queue" }],
-    analyst: [{ label: "Inbox", target: "work-inbox" }, { label: "Case queue", target: "case-queue" }, { label: "Active review", target: "case-workspace" }, { label: "Scoring rules", target: "risk-configuration" }],
-    committee_member: [{ label: "Inbox", target: "work-inbox" }, { label: "Case queue", target: "case-queue" }, { label: "Policy sources", target: "policy-library" }, { label: "Decision review", target: "case-workspace" }],
-    administrator: [{ label: "Inbox", target: "work-inbox" }, { label: "Policy sources", target: "policy-library" }, { label: "Scoring rules", target: "risk-configuration" }, { label: "Case queue", target: "case-queue" }],
-    auditor: [{ label: "Case queue", target: "case-queue" }, { label: "Audit timeline", target: "audit-timeline" }, { label: "Case details", target: "case-workspace" }],
+    product_owner: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "New intake", target: "product-intake" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }],
+    analyst: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Active review", target: "case-workspace" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Scoring rules", target: "risk-configuration" }],
+    committee_member: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Decision review", target: "case-workspace" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Policy sources", target: "policy-library" }],
+    administrator: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Policy sources", target: "policy-library" }, { label: "Scoring rules", target: "risk-configuration" }],
+    auditor: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }],
   }[activeActor?.role ?? ""] ?? [];
   const visibleCases = cases.filter((item) => {
     const matchesSearch = `${item.case_id} ${item.title} ${item.change_type}`.toLowerCase().includes(queueSearch.toLowerCase());
@@ -428,10 +428,34 @@ export default function Home() {
     {notifications.length ? <ul>{notifications.slice(0, 5).map((notification) => <li className={notification.read_at ? "read" : "unread"} key={notification.notification_id}><div><strong>{notification.action.replaceAll("_", " ")}</strong><span>{notification.message} · {notification.case_id}</span></div>{notification.read_at ? <small>Acknowledged</small> : <button type="button" disabled={working} onClick={() => void acknowledgeNotification(notification)}>Open and acknowledge</button>}</li>)}</ul> : <p className="muted">No workflow handoffs for this role.</p>}
   </details>;
 
-  return <main>
-    <header><div><p className="brand">Myridius.ai <span>FCRM workbench</span></p><h1>Risk Assessment Workbench</h1></div><div className="identity">{auth.mode === "demo" ? <><span className="environment">DEMO MODE</span><label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label></> : <><span className="environment">OIDC AUTHENTICATED</span><span>{activeActor?.display_name} · {activeActor?.role.replaceAll("_", " ")}</span><button type="button" onClick={auth.logout}>Sign out</button></>}</div></header>
+  return <div className="app-shell">
+    <aside className="sidebar">
+      <div className="brand">MYRIDIUS.AI <strong>Risk Workbench</strong></div>
+      <nav className="side-nav" aria-label={`${activeActor?.role.replaceAll("_", " ") ?? "workbench"} workspace`}>
+        {roleNavigation.map((item, index) => <a className={index === 0 ? "selected" : ""} href={`#${item.target}`} key={item.target}>
+          <span>{item.label}</span>
+          {item.label === "Cases" && <span className="nav-count">{visibleCases.length}</span>}
+          {item.label === "Workflow inbox" && <span className="nav-count">{unreadHandoffs}</span>}
+        </a>)}
+      </nav>
+      <div className="sidebar-account">
+        {auth.mode === "demo" && <label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label>}
+        <strong>{activeActor?.role.replaceAll("_", " ") ?? "Workbench user"}</strong>
+        <span>{activeActor?.display_name ?? "Loading identity"}</span>
+      </div>
+    </aside>
+    <div className="app-main">
+      <header className="topbar">
+        <div className="breadcrumb">Cases{activeCase && <> / <strong>{activeCase.case_id}</strong></>}</div>
+        <div className="topbar-actions">
+          {auth.mode === "oidc" && <span className="environment"><i /> OIDC authenticated</span>}
+          {auth.mode === "demo" && <span className="environment"><i /> Demo mode</span>}
+          {auth.mode === "oidc" && <button className="button-secondary" type="button" onClick={auth.logout}>Sign out</button>}
+          {activeActor?.role === "product_owner" && <a className="button-primary" href="#product-intake">New intake</a>}
+        </div>
+      </header>
+      <main className="workbench-main">
     <section className="demo-bar" aria-live="polite"><span>{message}</span></section>
-    {roleNavigation.length > 0 && <nav className="role-navigation" aria-label={`${activeActor?.role.replaceAll("_", " ")} workflow navigation`}><span>WORKSPACE</span>{roleNavigation.map((item) => <a href={`#${item.target}`} key={item.target}>{item.label}</a>)}</nav>}
     {riskConfiguration && onlyRoles(["analyst", "committee_member", "administrator"], <section className="configuration" id="risk-configuration">
       <div><p className="label">ACTIVE SCORING CONFIGURATION</p><h2>{riskConfiguration.version}</h2><p className="muted">Updated by {riskConfiguration.updated_by} · {new Date(riskConfiguration.updated_at).toLocaleDateString()}</p></div>
       <dl>
@@ -498,24 +522,25 @@ export default function Home() {
         </div>
         {visibleCases.length ? visibleCases.map((item) => <button className={activeCase?.case_id === item.case_id ? "case-item selected" : "case-item"} type="button" key={item.case_id} onClick={() => void loadCase(item.case_id)}>
           <span className="case-title">{item.title}</span>
-          <span>{item.case_id} · {item.status.replace("_", " ")}</span>
+          <span className="case-meta"><span>{item.case_id}</span><span className={`status-pill status-${item.status}`}>{item.status.replaceAll("_", " ")}</span></span>
         </button>) : <p className="muted">No cases match this queue view.</p>}
       </aside>
       <section className="case-content" id="case-workspace">
-        {!activeCase ? <div className="empty"><h2>Start a governed assessment</h2><p>Create a case, then progress it through explicit human gates.</p></div> : <>
+        {!activeCase ? <div className="empty"><span className="section-anchor" id="evidence-library" /><span className="section-anchor" id="audit-timeline" /><h2>Start a governed assessment</h2><p>Create a case or select one from the queue to review its evidence and audit history.</p></div> : <>
           <section className="summary">
-            <div><p className="label">{activeCase.status.replace("_", " ").toUpperCase()}</p><h2>{activeCase.title}</h2><p className="muted">{activeCase.case_id} · Version {activeCase.version} · {activeCase.change_type.replace("_", " ")}</p></div>
+            <div className="summary-detail"><p className="label">{activeCase.status.replaceAll("_", " ").toUpperCase()}</p><h2>{activeCase.title}</h2><div className="case-chips"><span>{activeCase.case_id}</span><span>Version {activeCase.version}</span><span>{activeCase.change_type.replaceAll("_", " ")}</span>{activeCase.intake?.jurisdictions.map((jurisdiction) => <span key={jurisdiction}>{jurisdiction}</span>)}{activeCase.intake?.target_launch_date && <span>Launch {new Date(activeCase.intake.target_launch_date).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</span>}</div></div>
             <div className="risk">
-              <span>Residual risk</span>
-              <strong>{activeCase.residual_risk} / 5</strong>
-              <small>{activeCase.risk_assessment?.rating ?? "Not assessed"}</small>
+              <span className="label">Residual risk</span>
+              <strong>{activeCase.residual_risk}<small> / 5</small></strong>
+              <div className="risk-meter" aria-label={`Residual risk ${activeCase.residual_risk} out of 5`}>{[1, 2, 3, 4, 5].map((level) => <i className={level <= activeCase.residual_risk ? "filled" : ""} key={level} />)}</div>
+              <small>{activeCase.risk_assessment?.rating ?? "Not yet assessed"}</small>
             </div>
           </section>
           <section className="workflow">{steps.map((step, index) => <div className={index < currentStep ? "step complete" : index === currentStep ? "step current" : "step"} key={step}>
             <span>{index + 1}</span>
             <p>{step}</p>
           </div>)}</section>
-          <section className="decision-pack">
+          <section className="decision-pack" id="evidence-library">
             <div><p className="label">DECISION PACK</p><h2>Review material</h2></div>
             <dl>
               <div><dt>Jurisdictions</dt><dd>{activeCase.intake?.jurisdictions.join(", ")}</dd></div>
@@ -606,5 +631,7 @@ export default function Home() {
       </section>
     </section>
     {inbox}
-  </main>;
+      </main>
+    </div>
+  </div>;
 }

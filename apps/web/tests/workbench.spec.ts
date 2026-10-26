@@ -10,11 +10,11 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
 
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Risk Assessment Workbench" })).toBeVisible();
-  await expect(page.getByText("DEMO MODE", { exact: true })).toBeVisible();
+  await expect(page.getByText("Risk Workbench", { exact: true })).toBeVisible();
+  await expect(page.getByText("Demo mode", { exact: true })).toBeVisible();
   await expect(page.getByText(/Required role:/)).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "product owner workflow navigation" }).getByRole("link", { name: "New intake" })).toBeVisible();
-  await page.getByLabel("Change title").fill("Browser workflow case");
+  await expect(page.getByRole("navigation", { name: "product owner workspace" }).getByRole("link", { name: "New intake" })).toBeVisible();
+  await page.locator("#product-intake input").first().fill("Browser workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
 
   await expect(page.locator(".demo-bar")).toContainText("Intake created. Product owner submission is now required.");
@@ -25,19 +25,27 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
   expect(submitIntake).not.toBeNull();
   expect(recordEvidence!.y).toBe(submitIntake!.y);
   expect(recordEvidence!.x).toBeLessThan(submitIntake!.x);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".case-list")).toHaveCSS("max-height", "320px");
+  const mobileEvidence = await page.getByRole("button", { name: "Record and extract evidence" }).boundingBox();
+  const mobileSubmit = await page.getByRole("button", { name: "Submit for intake review" }).boundingBox();
+  expect(mobileEvidence).not.toBeNull();
+  expect(mobileSubmit).not.toBeNull();
+  expect(mobileEvidence!.y).toBe(mobileSubmit!.y);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(actorHeaders).toContain("product-owner");
 });
 
 test("analyst reviews deterministic scores and structured assessment draft", async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("Change title").fill("Analyst review workflow case");
+  await page.locator("#product-intake input").first().fill("Analyst review workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
   await page.getByRole("button", { name: "Submit for intake review" }).click();
   await expect(page.locator(".demo-bar")).toContainText("Case submitted for intake review.");
 
   await page.getByLabel("Acting as").selectOption("analyst");
-  await expect(page.getByRole("navigation", { name: "analyst workflow navigation" }).getByRole("link", { name: "Active review" })).toBeVisible();
-  await expect(page.getByLabel("Change title")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "analyst workspace" }).getByRole("link", { name: "Active review" })).toBeVisible();
+  await expect(page.locator("#product-intake")).toHaveCount(0);
   await page.locator(".inbox summary").click();
   const handoff = page.locator(".inbox li").filter({ hasText: "Analyst review workflow case" });
   const acknowledgeButton = handoff.getByRole("button", { name: "Open and acknowledge" }).first();
@@ -57,13 +65,35 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await expect(page.getByText("DEMO SAMPLE · NOT AUTHORITATIVE")).toBeVisible();
 });
 
+test("all personas have visible navigation targets", async ({ page }) => {
+  const personas = [
+    { actor: "product-owner", name: "product owner", links: { Cases: "case-queue", "Workflow inbox": "work-inbox", "New intake": "product-intake", "Evidence library": "evidence-library", "Audit log": "audit-timeline" } },
+    { actor: "analyst", name: "analyst", links: { Cases: "case-queue", "Workflow inbox": "work-inbox", "Active review": "case-workspace", "Evidence library": "evidence-library", "Audit log": "audit-timeline", "Scoring rules": "risk-configuration" } },
+    { actor: "committee", name: "committee member", links: { Cases: "case-queue", "Workflow inbox": "work-inbox", "Decision review": "case-workspace", "Evidence library": "evidence-library", "Audit log": "audit-timeline", "Policy sources": "policy-library" } },
+    { actor: "administrator", name: "administrator", links: { Cases: "case-queue", "Workflow inbox": "work-inbox", "Evidence library": "evidence-library", "Audit log": "audit-timeline", "Policy sources": "policy-library", "Scoring rules": "risk-configuration" } },
+    { actor: "auditor", name: "auditor", links: { Cases: "case-queue", "Workflow inbox": "work-inbox", "Evidence library": "evidence-library", "Audit log": "audit-timeline" } },
+  ];
+
+  await page.goto("/");
+  await expect(page.getByLabel("Acting as").locator("option")).toHaveCount(5);
+  for (const persona of personas) {
+    await page.getByLabel("Acting as").selectOption(persona.actor);
+    const navigation = page.getByRole("navigation", { name: `${persona.name} workspace` });
+    for (const [label, target] of Object.entries(persona.links)) {
+      const link = navigation.locator(`a[href="#${target}"]`);
+      await expect(link).toContainText(label);
+      await expect(page.locator(`#${target}`)).toHaveCount(1);
+    }
+  }
+});
+
 test("administrator and committee govern source-linked policy revisions", async ({ page }) => {
   const sourceRun = Date.now().toString();
   const firstSourceId = `HACKATHON-${sourceRun}-01`;
   const secondSourceId = `HACKATHON-${sourceRun}-02`;
   await page.goto("/");
   await page.getByLabel("Acting as").selectOption("administrator");
-  const navigation = page.getByRole("navigation", { name: "administrator workflow navigation" });
+  const navigation = page.getByRole("navigation", { name: "administrator workspace" });
   await navigation.getByRole("link", { name: "Policy sources" }).click();
   await expect(page.getByText("Sample policy entries are for demonstration only", { exact: false })).toBeVisible();
 
