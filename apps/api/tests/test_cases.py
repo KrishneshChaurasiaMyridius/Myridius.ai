@@ -723,6 +723,39 @@ def test_anthropic_provider_malformed_output_fails_closed(monkeypatch) -> None:
     assert execution["status"] == "failed"
 
 
+def test_anthropic_api_error_is_diagnosable_without_exposing_raw_error(monkeypatch) -> None:
+    class SimulatedAPIError(Exception):
+        status_code = 401
+
+    class Messages:
+        def create(self, **kwargs: object) -> object:
+            raise SimulatedAPIError("rejected key: test-secret-must-not-appear")
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            self.messages = Messages()
+
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    monkeypatch.setenv("AI_ADAPTER", "anthropic-claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setattr(main, "Anthropic", Client)
+
+    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    case = client.get(f"/api/v1/cases/{case_id}").json()
+    execution = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS).json()[0]
+
+    assert response.status_code == 503
+    assert "HTTP 401" in response.json()["detail"]
+    assert "test-secret-must-not-appear" not in response.json()["detail"]
+    assert case["status"] == "analyst_review"
+    assert case["assessment_draft"] is None
+    assert "HTTP 401" in execution["failure_reason"]
+    assert "test-secret-must-not-appear" not in execution["failure_reason"]
+
+
 def test_assessment_provider_cannot_change_deterministic_factor_scores(monkeypatch) -> None:
     class TamperedProvider:
         adapter_name = "tampered-test-provider"

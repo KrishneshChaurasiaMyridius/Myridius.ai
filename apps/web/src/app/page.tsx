@@ -136,7 +136,9 @@ export default function Home() {
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail ?? "Workflow action failed.");
+      const requestId = response.headers.get("X-Request-Id");
+      const detail = error.detail ?? "Workflow action failed.";
+      throw new Error(requestId ? `${detail} (Request ID: ${requestId})` : detail);
     }
     return response.json() as Promise<T>;
   }

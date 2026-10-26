@@ -534,6 +534,34 @@ class DeterministicAssessmentProvider:
         )
 
 
+class ProviderExecutionError(RuntimeError):
+    pass
+
+
+def anthropic_failure_reason(error: Exception) -> str:
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code == 401:
+            return "Anthropic rejected the API key (HTTP 401); verify the server-side key and workspace."
+        if status_code == 403:
+            return "Anthropic denied this request (HTTP 403); verify model and workspace permissions."
+        if status_code == 404:
+            return "Anthropic could not find the configured model (HTTP 404); verify ANTHROPIC_MODEL."
+        if status_code == 429:
+            return "Anthropic rate or usage limit reached (HTTP 429); check workspace limits and retry later."
+        if status_code >= 500:
+            return f"Anthropic service error (HTTP {status_code}); retry later and check provider status."
+        return f"Anthropic rejected the request (HTTP {status_code}); check provider configuration."
+    error_type = type(error).__name__
+    if error_type == "APITimeoutError":
+        return "Anthropic request timed out; check service connectivity and retry."
+    if error_type == "APIConnectionError":
+        return "Could not connect to Anthropic; check outbound network access and retry."
+    if error_type in {"ValidationError", "JSONDecodeError"}:
+        return "Anthropic returned output that did not match the required structured format."
+    return "Anthropic request failed; inspect API service logs for the exception class."
+
+
 class AnthropicAssessmentProvider:
     adapter_name = "anthropic-claude"
 
@@ -614,7 +642,7 @@ class AnthropicAssessmentProvider:
                 generated.actual_output_tokens = getattr(usage, "output_tokens", None)
             return generated
         except Exception as error:
-            raise RuntimeError("Anthropic assessment generation failed or returned invalid structured output.") from error
+            raise ProviderExecutionError(anthropic_failure_reason(error)) from error
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -1777,7 +1805,7 @@ class CaseStore:
                 insight.ai_suggested_score is None for insight in generated.risk_factor_analysis
             ):
                 raise RuntimeError("Anthropic assessment omitted one or more advisory factor ratings.")
-        except (ProviderConfigurationError, RuntimeError) as error:
+        except (ProviderConfigurationError, ProviderExecutionError, RuntimeError) as error:
             failed_execution = AIExecution(
                 execution_id=str(uuid4()),
                 case_id=case_id,
@@ -1810,7 +1838,7 @@ class CaseStore:
                 )
             detail = (
                 str(error)
-                if isinstance(error, ProviderConfigurationError)
+                if isinstance(error, (ProviderConfigurationError, ProviderExecutionError))
                 else "Assessment provider is unavailable; the case remains in analyst review."
             )
             raise HTTPException(

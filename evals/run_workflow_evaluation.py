@@ -16,7 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "api"))
 os.environ["RAW_DATABASE_PATH"] = str(Path(gettempdir()) / "myridius-evaluation.db")
 os.environ["AUTH_MODE"] = "demo"
-os.environ.setdefault("AI_ADAPTER", "deterministic-mock-v1")
+if "--require-claude" in sys.argv:
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise SystemExit("Set ANTHROPIC_API_KEY before running with --require-claude.")
+    os.environ["AI_ADAPTER"] = "anthropic-claude"
+elif os.getenv("ANTHROPIC_API_KEY") and "AI_ADAPTER" not in os.environ:
+    os.environ["AI_ADAPTER"] = "anthropic-claude"
+else:
+    os.environ.setdefault("AI_ADAPTER", "deterministic-mock-v1")
 
 from fastapi.testclient import TestClient
 from app.main import app, case_store
@@ -65,6 +72,15 @@ def run() -> dict[str, object]:
         },
     )
     drafted = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    if drafted.status_code != 200:
+        raise RuntimeError(f"Assessment draft failed ({drafted.status_code}): {drafted.text}")
+    draft = drafted.json()["assessment_draft"]
+    if "--require-claude" in sys.argv and draft["generator"] != "anthropic-claude":
+        raise RuntimeError(f"Expected Claude, but draft used {draft['generator']}.")
+    if "--require-claude" in sys.argv and not all(
+        draft[field] for field in ("discrepancies", "risk_signals", "research_steps")
+    ):
+        raise RuntimeError("Claude draft is missing discrepancy, risk-signal, or analyst research guidance for the sample.")
     ai_executions = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS)
     sent_to_committee = client.post(f"/api/v1/cases/{case_id}/send-to-committee", headers=ANALYST_HEADERS)
     decided = client.post(
@@ -85,7 +101,16 @@ def run() -> dict[str, object]:
         "case_id": case_id,
         "sample_record": "evals/sample_intake.json",
         "sample_evidence": "evals/sample_control_evidence.md",
-        "draft_provider": drafted.json().get("assessment_draft", {}).get("generator"),
+        "draft_provider": draft["generator"],
+        "draft_summary": draft["summary"],
+        "ai_suggested_factor_scores": {
+            item["factor"]: item["ai_suggested_score"]
+            for item in draft["risk_factor_analysis"]
+            if item.get("ai_suggested_score") is not None
+        },
+        "discrepancies": draft["discrepancies"],
+        "risk_signals": draft["risk_signals"],
+        "research_steps": draft["research_steps"],
         "evidence_document_count": len(drafted.json().get("document_evidence", [])),
         "workflow_status_codes": [
             created.status_code,
@@ -98,14 +123,14 @@ def run() -> dict[str, object]:
             evidence_package.status_code,
         ],
         "residual_risk_floor_respected": assessed.json()["residual_risk"] >= 1,
-        "citation_count": len(drafted.json()["assessment_draft"]["citations"]),
-        "discrepancy_section_present": "discrepancies" in drafted.json()["assessment_draft"],
-        "research_steps_present": "research_steps" in drafted.json()["assessment_draft"],
+        "citation_count": len(draft["citations"]),
+        "discrepancy_section_present": "discrepancies" in draft,
+        "research_steps_present": "research_steps" in draft,
         "ai_execution_recorded": ai_executions.status_code == 200 and len(ai_executions.json()) == 1,
         "estimated_ai_tokens": sum(
             ai_executions.json()[0][field] for field in ("estimated_input_tokens", "estimated_output_tokens")
         ) if ai_executions.status_code == 200 and ai_executions.json() else 0,
-        "human_only_decision_authority": drafted.json()["assessment_draft"]["decision_authority"] == "human_only",
+        "human_only_decision_authority": draft["decision_authority"] == "human_only",
         "audit_chain_valid": package["audit_verification"]["valid"],
         "unauthorized_transition_status": unauthorized.status_code,
     }

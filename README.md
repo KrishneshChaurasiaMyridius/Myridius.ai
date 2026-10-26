@@ -93,7 +93,41 @@ For the current deployment, register `https://myridius-ai-ye2b-one.vercel.app` a
 
 GitHub Actions runs SQLite and PostgreSQL Alembic migration smoke checks, PostgreSQL `CaseStore` initialization, the API workflow test suite, Python dependency audit, web type check, high-severity npm audit, and a Chromium Playwright smoke test that creates a synthetic case through the live workbench on pushes and pull requests.
 
-Run the repeatable sample case from the repository root with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It creates the intake in [evals/sample_intake.json](evals/sample_intake.json), uploads [evals/sample_control_evidence.md](evals/sample_control_evidence.md), scores the case, invokes **Prepare cited draft**, and verifies that the draft contains approved demo citations. The evaluation uses demo identity and the deterministic mock provider by default, so it works without an Anthropic key. To exercise Claude instead, set `AI_ADAPTER=anthropic-claude` and `ANTHROPIC_API_KEY` in the environment before running it. The run also checks human-only decision authority, AI execution telemetry, residual-risk floor enforcement, audit-chain integrity and an unauthorized transition.
+### Prepare a live Claude demo
+
+Use a local demo API with the Anthropic key configured only in its server environment. In the API PowerShell terminal, set:
+
+```powershell
+Set-Location apps/api
+$env:AUTH_MODE = "demo"
+$env:AI_ADAPTER = "anthropic-claude"
+$env:ANTHROPIC_API_KEY = "<your Anthropic API key>"
+C:\Python313\python.exe -m uvicorn app.main:app --reload --port 8000
+```
+
+Do not add the key to `NEXT_PUBLIC_*`, the web app, source control, or a browser request. In a second terminal, start the web app:
+
+```powershell
+Set-Location apps/web
+npm.cmd run dev
+```
+
+From the repository root, create a sample draft and upload its synthetic evidence into the running API:
+
+```powershell
+C:\Python313\python.exe evals\load_sample_case.py
+```
+
+The script prints the new case ID. In the workbench, select that case, submit the intake, switch to the analyst persona, run the deterministic risk assessment, and select **Prepare cited draft**. Confirm the draft says `anthropic-claude` and review its advisory factor ratings, GB/US and web/API discrepancies, risk signals, analyst research steps, and citations. The synthetic report intentionally documents only GB web screening and omits US/API, third-party access controls, and monitoring effectiveness. The draft should help the analyst investigate these gaps; it is not a finding of misconduct or a committee decision. Demo policy citations are synthetic and non-authoritative.
+
+For an automated end-to-end check that requires a real Claude call, run from the repository root with the same API key set in that terminal:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "<your Anthropic API key>"
+C:\Python313\python.exe evals\run_workflow_evaluation.py --require-claude
+```
+
+`--require-claude` fails when the key is absent or the response did not come from the Anthropic provider. Without that option, the evaluator auto-selects Claude when a key is present and otherwise uses the deterministic mock. This automated evaluator uses an isolated temporary database; use `load_sample_case.py` for a case that appears in the running workbench.
 
 ## AI adapter boundary
 
