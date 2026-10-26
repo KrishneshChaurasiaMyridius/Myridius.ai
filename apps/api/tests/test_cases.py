@@ -197,6 +197,41 @@ def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -
     assert accepted.status_code == 201
 
 
+def test_oidc_mode_rejects_identity_without_human_readable_claim(monkeypatch) -> None:
+    role_claim = "https://myridius.ai/claims/fcrm_role"
+
+    class SigningKey:
+        key = "test-public-key"
+
+    class JwksClient:
+        def __init__(self, url: str) -> None:
+            pass
+
+        def get_signing_key_from_jwt(self, token: str) -> SigningKey:
+            return SigningKey()
+
+    monkeypatch.setenv("AUTH_MODE", "oidc")
+    monkeypatch.setenv("OIDC_ISSUER", "https://identity.example.test")
+    monkeypatch.setenv("OIDC_AUDIENCE", "risk-workbench")
+    monkeypatch.setenv("OIDC_JWKS_URL", "https://identity.example.test/keys")
+    monkeypatch.setenv("OIDC_ROLE_CLAIM", role_claim)
+    monkeypatch.setattr(main.jwt, "PyJWKClient", JwksClient)
+    monkeypatch.setattr(
+        main.jwt,
+        "decode",
+        lambda *args, **kwargs: {
+            "sub": "auth0|opaque-id",
+            "https://myridius.ai/claims/display_name": "auth0|opaque-id",
+            role_claim: "committee_member",
+        },
+    )
+
+    response = client.get("/api/v1/identity/me", headers={"Authorization": "Bearer valid-token"})
+
+    assert response.status_code == 401
+    assert "human-readable claim" in response.json()["detail"]
+
+
 def test_rejects_non_synthetic_data() -> None:
     intake = valid_intake()
     intake["is_synthetic"] = False
@@ -302,7 +337,7 @@ def test_synthetic_text_upload_preserves_provenance_and_rejects_unsupported_type
 
     uploaded = client.post(
         f"/api/v1/cases/{case_id}/document-evidence/upload",
-        data={"title": "Synthetic uploaded control report", "document_type": "control_test", "is_synthetic": "true"},
+        data={"title": "Synthetic uploaded control report", "document_type": "control_test", "is_synthetic": "true", "source_url": "https://example.test/synthetic-upload.md"},
         files={"file": ("control-report.md", content.encode("utf-8"), "text/markdown")},
     )
     unsupported = client.post(
@@ -320,6 +355,9 @@ def test_synthetic_text_upload_preserves_provenance_and_rejects_unsupported_type
     assert uploaded.json()["ingestion_method"] == "uploaded_text"
     assert uploaded.json()["original_filename"] == "control-report.md"
     assert uploaded.json()["media_type"] == "text/markdown"
+    assert uploaded.json()["source_url"] == "https://example.test/synthetic-upload.md"
+    assert uploaded.json()["extracted_jurisdictions"] == ["GB"]
+    assert uploaded.json()["extracted_controls"] == ["Sanctions screening"]
     assert uploaded.json()["content_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
     assert unsupported.status_code == 415
     assert unsafe_filename.status_code == 422

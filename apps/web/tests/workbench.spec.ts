@@ -17,7 +17,8 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
   await page.locator("#product-intake input").first().fill("Browser workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
 
-  await expect(page.locator(".demo-bar")).toContainText("Intake created. Product owner submission is now required.");
+  await expect(page.locator(".toast")).toContainText("Intake created. Product owner submission is now required.");
+  await expect(page.locator(".workbench-main > .inbox")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: /Browser workflow case/ })).toBeVisible();
   const recordEvidence = await page.getByRole("button", { name: "Record and extract evidence" }).boundingBox();
   const submitIntake = await page.getByRole("button", { name: "Submit for intake review" }).boundingBox();
@@ -41,7 +42,7 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await page.locator("#product-intake input").first().fill("Analyst review workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
   await page.getByRole("button", { name: "Submit for intake review" }).click();
-  await expect(page.locator(".demo-bar")).toContainText("Case submitted for intake review.");
+  await expect(page.locator(".toast")).toContainText("Case submitted for intake review.");
 
   await page.getByLabel("Acting as").selectOption("analyst");
   await expect(page.getByRole("navigation", { name: "analyst workspace" }).getByRole("link", { name: "Active review" })).toBeVisible();
@@ -51,7 +52,7 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   const acknowledgeButton = handoff.getByRole("button", { name: "Open and acknowledge" }).first();
   await expect(acknowledgeButton).toBeEnabled();
   await acknowledgeButton.click();
-  await expect(page.locator(".demo-bar")).toContainText("Workflow handoff acknowledged.");
+  await expect(page.locator(".toast")).toContainText("Workflow handoff acknowledged.");
   await expect(page.locator("#case-workspace")).toBeInViewport();
   await page.getByRole("button", { name: "Run risk assessment" }).click();
   await expect(page.getByRole("heading", { name: "Analyst recommendation" })).toBeVisible();
@@ -62,7 +63,14 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await expect(page.getByRole("heading", { name: "Control observations" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Evidence gaps" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Approved source excerpts" })).toBeVisible();
-  await expect(page.getByText("DEMO SAMPLE · NOT AUTHORITATIVE")).toBeVisible();
+  await expect(page.getByText("DEMO SAMPLE · NOT AUTHORITATIVE").first()).toBeVisible();
+  await expect(page.locator(".draft-purpose")).toContainText("does not decide or approve the case");
+  await page.getByRole("button", { name: "Send to committee" }).click();
+  await expect(page.locator(".toast")).toContainText("Case sent to committee.");
+  await page.getByLabel("Acting as").selectOption("committee");
+  const committeeHandoff = page.locator(".inbox li").filter({ hasText: "Analyst review workflow case" });
+  await committeeHandoff.getByRole("button", { name: "Open and acknowledge" }).click();
+  await expect(page.getByLabel("Condition owner")).toHaveValue("");
 });
 
 test("all personas have visible navigation targets", async ({ page }) => {
@@ -128,4 +136,23 @@ test("administrator and committee govern source-linked policy revisions", async 
   await secondVersion.getByRole("button", { name: "Approve" }).click();
   await expect(secondVersion).toContainText("approved");
   await expect(firstVersion).toContainText(`superseded by ${secondSourceId}`);
+});
+
+test("product owner uploads synthetic text and sees extracted cues separately from its hash", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#product-intake input").first().fill("Evidence upload workflow case");
+  await page.getByRole("button", { name: "Create intake" }).click();
+  await expect(page.locator(".toast")).toContainText("Intake created.");
+  await page.locator('#evidence-upload input[type="file"]').setInputFiles({
+    name: "synthetic-controls.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from("Synthetic GB and US cross-border testing confirms sanctions screening and transaction monitoring."),
+  });
+  await expect(page.getByRole("button", { name: "Upload and extract evidence" })).toBeEnabled();
+  await page.getByRole("button", { name: "Upload and extract evidence" }).click();
+  await expect(page.locator(".toast")).toContainText("Text evidence uploaded");
+  const evidence = page.locator(".evidence-provenance li").filter({ hasText: "Control test report" });
+  await expect(evidence).toContainText("Jurisdictions: GB, US");
+  await expect(evidence).toContainText("Sanctions screening, Transaction monitoring");
+  await expect(evidence).toContainText("Content fingerprint (SHA-256)");
 });

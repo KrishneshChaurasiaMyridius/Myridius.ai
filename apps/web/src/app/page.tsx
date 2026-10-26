@@ -75,7 +75,7 @@ const riskFactors = ["customer", "product", "channel", "geography", "transaction
 const applicationRoles = ["product_owner", "analyst", "committee_member", "auditor", "administrator"];
 
 function IntakeField({ label, help, children, className }: { label: string; help: string; children: ReactNode; className?: string }) {
-  return <label className={className}><span className="field-label-row"><span>{label}</span><details className="field-tip"><summary aria-label="Show field guidance" title={`Help: ${label}`}>i</summary><span role="tooltip">{help}</span></details></span>{children}</label>;
+  return <label className={className}><span className="field-label-row"><span>{label}</span><details className="field-tip"><summary aria-label={`Field guidance for ${label}`} title={label}>i</summary><span role="tooltip">{help}</span></details></span>{children}</label>;
 }
 
 function asList(value: string) {
@@ -101,8 +101,9 @@ export default function Home() {
   const identityReady = auth.mode === "demo" || (auth.configured && !auth.isLoading && auth.isAuthenticated && Boolean(activeActor));
   const [riskInput, setRiskInput] = useState({ customer: 4, product: 5, channel: 3, geography: 4, transaction: 5, third_party: 3, control_effectiveness: 2 });
   const [overrideInput, setOverrideInput] = useState({ residual_risk: 4, rationale: "Cross-border launch uncertainty warrants a higher residual-risk rating for committee review." });
-  const [decisionInput, setDecisionInput] = useState({ decision: "approve_with_conditions", rationale: "Approval is appropriate once the specified control verification is completed.", description: "Verify sanctions-screening coverage before launch.", owner: "Taylor Product Owner", due_date: "2026-10-31T00:00", verification_criteria: "Provide a test report demonstrating coverage for GB and US payment routes." });
-  const [message, setMessage] = useState("Create a case to begin the governed workflow.");
+  const [decisionInput, setDecisionInput] = useState({ decision: "approve_with_conditions", rationale: "", description: "", owner: "", due_date: "", verification_criteria: "" });
+  const [conditionEvidenceSummary, setConditionEvidenceSummary] = useState("");
+  const [message, setMessage] = useState("");
   const [working, setWorking] = useState(false);
   const [intake, setIntake] = useState(initialIntake);
   const [queueSearch, setQueueSearch] = useState("");
@@ -113,6 +114,12 @@ export default function Home() {
   const [policySources, setPolicySources] = useState<PolicySource[]>([]);
   const [officialPolicyInput, setOfficialPolicyInput] = useState({ source_id: "POLICY-EXTERNAL-01", source_version: 1, supersedes_source_id: "", title: "", topic: "risk_based_approach", excerpt: "", source_url: "" });
   const [notifications, setNotifications] = useState<WorkflowNotification[]>([]);
+
+  useEffect(() => {
+    if (!message) return;
+    const timeout = window.setTimeout(() => setMessage(""), 6500);
+    return () => window.clearTimeout(timeout);
+  }, [message]);
 
   async function request<T>(path: string, options?: RequestInit, protectedAction = false): Promise<T> {
     const identityHeaders = protectedAction ? await protectedHeaders() : {};
@@ -165,6 +172,7 @@ export default function Home() {
     try {
       const [caseDetail, auditEvents] = await Promise.all([request<Case>(`/api/v1/cases/${caseId}`), request<AuditEvent[]>(`/api/v1/cases/${caseId}/audit-events`)]);
       setActiveCase(caseDetail); setEvents(auditEvents);
+      setConditionEvidenceSummary("");
       if (caseDetail.status === "draft" && caseDetail.intake) {
         setIntake({
           title: caseDetail.intake.title,
@@ -295,8 +303,13 @@ export default function Home() {
       setMessage("Select a UTF-8 text or Markdown document to upload.");
       return;
     }
-    if (!['text/plain', 'text/markdown'].includes(evidenceUpload.type)) {
-      setMessage("Only plain-text or Markdown evidence can be uploaded.");
+    const extension = evidenceUpload.name.toLowerCase().split(".").pop();
+    if (!(extension === "txt" || extension === "md") || (evidenceUpload.type && !["text/plain", "text/markdown", "application/octet-stream"].includes(evidenceUpload.type))) {
+      setMessage("Choose a .txt or .md file containing UTF-8 synthetic evidence.");
+      return;
+    }
+    if (evidenceUpload.size < 1 || evidenceUpload.size > 20_000) {
+      setMessage("The evidence file must contain between 1 and 20,000 bytes.");
       return;
     }
     setWorking(true);
@@ -305,7 +318,9 @@ export default function Home() {
       payload.set("title", documentInput.title);
       payload.set("document_type", documentInput.document_type);
       payload.set("is_synthetic", "true");
-      payload.set("file", evidenceUpload);
+      if (documentInput.source_url) payload.set("source_url", documentInput.source_url);
+      const mediaType = evidenceUpload.name.toLowerCase().endsWith(".md") ? "text/markdown" : "text/plain";
+      payload.set("file", new File([evidenceUpload], evidenceUpload.name, { type: mediaType }));
       const response = await fetch(`${apiUrl}/api/v1/cases/${activeCase.case_id}/document-evidence/upload`, {
         method: "POST",
         headers: await protectedHeaders(),
@@ -408,7 +423,7 @@ export default function Home() {
     product_owner: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "New intake", target: "product-intake" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }],
     analyst: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Active review", target: "case-workspace" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Scoring rules", target: "risk-configuration" }],
     committee_member: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Decision review", target: "case-workspace" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Policy sources", target: "policy-library" }],
-    administrator: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Policy sources", target: "policy-library" }, { label: "Scoring rules", target: "risk-configuration" }],
+    administrator: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "New intake", target: "product-intake" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }, { label: "Policy sources", target: "policy-library" }, { label: "Scoring rules", target: "risk-configuration" }],
     auditor: [{ label: "Cases", target: "case-queue" }, { label: "Workflow inbox", target: "work-inbox" }, { label: "Evidence library", target: "evidence-library" }, { label: "Audit log", target: "audit-timeline" }],
   }[activeActor?.role ?? ""] ?? [];
   const visibleCases = cases.filter((item) => {
@@ -423,6 +438,7 @@ export default function Home() {
   if (auth.mode === "oidc" && !activeActor) return <main className="auth-gate"><p className="eyebrow">IDENTITY NOT AUTHORIZED</p><h1>Could not validate your workbench identity</h1><p>{oidcIdentityError || `The API token must include ${FCRM_ROLE_CLAIM} with one of: ${applicationRoles.join(", ")}.`}</p><button type="button" onClick={auth.logout}>Sign out</button></main>;
 
   const unreadHandoffs = notifications.filter((notification) => !notification.read_at).length;
+  const messageIsError = /unable|unavailable|failed|only |requires|must |no approved|could not|invalid|not authorized|select a|cannot|error|rejected|unsupported|too large/i.test(message);
   const inbox = <details className="inbox" id="work-inbox">
     <summary><span className="label">WORKFLOW INBOX</span><span>{unreadHandoffs} open handoff(s)</span></summary>
     {notifications.length ? <ul>{notifications.slice(0, 5).map((notification) => <li className={notification.read_at ? "read" : "unread"} key={notification.notification_id}><div><strong>{notification.action.replaceAll("_", " ")}</strong><span>{notification.message} · {notification.case_id}</span></div>{notification.read_at ? <small>Acknowledged</small> : <button type="button" disabled={working} onClick={() => void acknowledgeNotification(notification)}>Open and acknowledge</button>}</li>)}</ul> : <p className="muted">No workflow handoffs for this role.</p>}
@@ -431,7 +447,7 @@ export default function Home() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand">MYRIDIUS.AI <strong>Risk Workbench</strong></div>
-      <nav className="side-nav" aria-label={`${activeActor?.role.replaceAll("_", " ") ?? "workbench"} workspace`}>
+      <nav className="side-nav" aria-label={`${activeActor?.role.replaceAll("_", " ")} workspace`}>
         {roleNavigation.map((item, index) => <a className={index === 0 ? "selected" : ""} href={`#${item.target}`} key={item.target}>
           <span>{item.label}</span>
           {item.label === "Cases" && <span className="nav-count">{visibleCases.length}</span>}
@@ -455,7 +471,8 @@ export default function Home() {
         </div>
       </header>
       <main className="workbench-main">
-    <section className="demo-bar" aria-live="polite"><span>{message}</span></section>
+    {inbox}
+    {message && <div className={`toast ${messageIsError ? "toast-error" : "toast-success"}`} role={messageIsError ? "alert" : "status"} aria-atomic="true"><span>{message}</span><button type="button" aria-label="Dismiss notification" onClick={() => setMessage("")}>x</button></div>}
     {riskConfiguration && onlyRoles(["analyst", "committee_member", "administrator"], <section className="configuration" id="risk-configuration">
       <div><p className="label">ACTIVE SCORING CONFIGURATION</p><h2>{riskConfiguration.version}</h2><p className="muted">Updated by {riskConfiguration.updated_by} · {new Date(riskConfiguration.updated_at).toLocaleDateString()}</p></div>
       <dl>
@@ -482,18 +499,18 @@ export default function Home() {
     </section>)}
     {onlyRoles(["product_owner"], <form className="intake-form" id="product-intake" onSubmit={(event) => void createCase(event)}>
       <div><p className="label">PRODUCT OWNER INTAKE</p><h2>{activeCase?.status === "draft" ? `Revise ${activeCase.case_id}` : "Create change case"}</h2><p className="muted">Describe the proposed change and its expected customer, operational, and control impact.</p></div>
-      <IntakeField label="Change title" help="Use a short, specific name that identifies the product, process, vendor, or customer change."><input required minLength={8} maxLength={160} value={intake.title} onChange={(event) => setIntake({ ...intake, title: event.target.value })} /></IntakeField>
-      <IntakeField label="Change type" help="Choose the category that best describes the primary change."><select value={intake.change_type} onChange={(event) => setIntake({ ...intake, change_type: event.target.value })}><option value="product">Product</option><option value="product_feature">Product feature</option><option value="process">Process</option><option value="vendor">Vendor</option><option value="geography">Geography</option><option value="customer_segment">Customer segment</option></select></IntakeField>
-      <IntakeField label="Business owner" help="The signed-in account responsible for this intake and follow-up, filled from your verified identity."><input required minLength={3} readOnly={auth.mode === "oidc"} value={auth.mode === "oidc" ? activeActor?.display_name ?? intake.business_owner : intake.business_owner} onChange={(event) => setIntake({ ...intake, business_owner: event.target.value })} /></IntakeField>
-      <IntakeField label="Target launch" help="Enter the expected date and time the change will reach customers or production."><input required type="datetime-local" value={intake.target_launch_date} onChange={(event) => setIntake({ ...intake, target_launch_date: event.target.value })} /></IntakeField>
-      <IntakeField label="Customer exposure" help="Estimate customer impact if the change creates financial-crime risk: low, moderate, or high."><select value={intake.customer_exposure} onChange={(event) => setIntake({ ...intake, customer_exposure: event.target.value })}><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option></select></IntakeField>
-      <IntakeField label="Jurisdictions" help="List countries or territories where the change will operate, separated by commas."><input required value={intake.jurisdictions} onChange={(event) => setIntake({ ...intake, jurisdictions: event.target.value })} /></IntakeField>
-      <IntakeField label="Delivery channels" help="List how customers access the product, such as web, mobile, branch, or API."><input required value={intake.delivery_channels} onChange={(event) => setIntake({ ...intake, delivery_channels: event.target.value })} /></IntakeField>
-      <IntakeField label="Payment characteristics" help="Describe payment types, flows, currencies, speed, or cross-border features."><input required value={intake.payment_characteristics} onChange={(event) => setIntake({ ...intake, payment_characteristics: event.target.value })} /></IntakeField>
-      <IntakeField label="Third parties" help="List vendors or other external parties involved. Vendor changes require at least one party."><>{intake.change_type === "vendor" && <span className="required">Required for vendor changes</span>}<input required={intake.change_type === "vendor"} value={intake.third_parties} onChange={(event) => setIntake({ ...intake, third_parties: event.target.value })} /></></IntakeField>
-      <IntakeField label="Proposed controls" help="List safeguards planned to prevent or detect financial-crime risks, separated by commas."><input required value={intake.proposed_controls} onChange={(event) => setIntake({ ...intake, proposed_controls: event.target.value })} /></IntakeField>
-      <IntakeField label="Attachment URLs" help="Optionally link supporting briefs, diagrams, test results, or control documentation."><input type="url" value={intake.attachment_urls} onChange={(event) => setIntake({ ...intake, attachment_urls: event.target.value })} /></IntakeField>
-      <IntakeField className="rationale" label="Business rationale" help="Explain the business need, expected benefit, affected customers, and material operational or risk changes."><textarea required minLength={20} maxLength={2000} value={intake.business_rationale} onChange={(event) => setIntake({ ...intake, business_rationale: event.target.value })} /></IntakeField>
+      <IntakeField label="Change title" help="This title identifies the request in queues, handoffs, reports, and the audit trail. Use a distinct name that lets reviewers recognize the change without opening the case."><input required minLength={8} maxLength={160} value={intake.title} onChange={(event) => setIntake({ ...intake, title: event.target.value })} /></IntakeField>
+      <IntakeField label="Change type" help="This category provides context for risk review and scoring. Choose the main thing changing: a product, feature, process, vendor, geography, or customer segment."><select value={intake.change_type} onChange={(event) => setIntake({ ...intake, change_type: event.target.value })}><option value="product">Product</option><option value="product_feature">Product feature</option><option value="process">Process</option><option value="vendor">Vendor</option><option value="geography">Geography</option><option value="customer_segment">Customer segment</option></select></IntakeField>
+      <IntakeField label="Business owner" help="Identifies the person accountable for the request and for responding to reviewer questions. In OIDC mode, this is taken from your verified workbench profile."><input required minLength={3} readOnly={auth.mode === "oidc"} value={auth.mode === "oidc" ? activeActor?.display_name ?? intake.business_owner : intake.business_owner} onChange={(event) => setIntake({ ...intake, business_owner: event.target.value })} /></IntakeField>
+      <IntakeField label="Target launch" help="The planned date and time the change will reach customers or production. Reviewers use this to understand urgency and whether controls can be in place before launch."><input required type="datetime-local" value={intake.target_launch_date} onChange={(event) => setIntake({ ...intake, target_launch_date: event.target.value })} /></IntakeField>
+      <IntakeField label="Customer exposure" help="Estimates how broadly customers may be affected if financial-crime controls fail or the change is misused. Select the level that best reflects expected reach and impact."><select value={intake.customer_exposure} onChange={(event) => setIntake({ ...intake, customer_exposure: event.target.value })}><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option></select></IntakeField>
+      <IntakeField label="Jurisdictions" help="Identifies the countries or territories where customers, transactions, operations, or counterparties are in scope. Enter standard codes or names separated by commas."><input required value={intake.jurisdictions} onChange={(event) => setIntake({ ...intake, jurisdictions: event.target.value })} /></IntakeField>
+      <IntakeField label="Delivery channels" help="Shows how customers or staff will access the change. List every relevant channel, such as web, mobile, branch, API, or a partner platform, separated by commas."><input required value={intake.delivery_channels} onChange={(event) => setIntake({ ...intake, delivery_channels: event.target.value })} /></IntakeField>
+      <IntakeField label="Payment characteristics" help="Describes how money moves so reviewers can identify exposure from payment speed, direction, value, currencies, cash, cross-border flows, or other transaction features."><input required value={intake.payment_characteristics} onChange={(event) => setIntake({ ...intake, payment_characteristics: event.target.value })} /></IntakeField>
+      <IntakeField label="Third parties" help="Names vendors, processors, agents, or other external parties that deliver or support the change. This helps reviewers assess dependency and oversight risk. Vendor changes require at least one party."><>{intake.change_type === "vendor" && <span className="required">Required for vendor changes</span>}<input required={intake.change_type === "vendor"} value={intake.third_parties} onChange={(event) => setIntake({ ...intake, third_parties: event.target.value })} /></></IntakeField>
+      <IntakeField label="Proposed controls" help="Lists safeguards expected to prevent, detect, or respond to relevant financial-crime risks. Name the control and its purpose; reviewers assess whether evidence demonstrates effectiveness."><input required value={intake.proposed_controls} onChange={(event) => setIntake({ ...intake, proposed_controls: event.target.value })} /></IntakeField>
+      <IntakeField label="Attachment URLs" help="Optional references to supporting briefs, diagrams, test results, or control documents. A URL is saved as a reference only; the linked file is not uploaded or read by the workbench."><input type="url" value={intake.attachment_urls} onChange={(event) => setIntake({ ...intake, attachment_urls: event.target.value })} /></IntakeField>
+      <IntakeField className="rationale" label="Business rationale" help="Explains why the change is needed, what benefit it provides, who it affects, and what is materially different about operations or risk. Reviewers use this to understand the request before assessing its controls."><textarea required minLength={20} maxLength={2000} value={intake.business_rationale} onChange={(event) => setIntake({ ...intake, business_rationale: event.target.value })} /></IntakeField>
       <div className="intake-actions"><button type="submit" disabled={working}>{activeCase?.status === "draft" ? "Save draft revision" : "Create intake"}</button>{activeCase?.status === "draft" && <button className="secondary" type="button" disabled={working} onClick={() => { setActiveCase(null); setEvents([]); setIntake(initialIntake); }}>Start new intake</button>}</div>
     </form>)}
     {activeCase?.status === "draft" && onlyRoles(["product_owner"], <form className="action-form evidence-upload" id="evidence-upload" onSubmit={(event) => void uploadDocumentEvidence(event)}>
@@ -501,14 +518,15 @@ export default function Home() {
       <label>Document title<input required minLength={5} maxLength={200} value={documentInput.title} onChange={(event) => setDocumentInput({ ...documentInput, title: event.target.value })} /></label>
       <label>Document type<input required minLength={3} maxLength={100} value={documentInput.document_type} onChange={(event) => setDocumentInput({ ...documentInput, document_type: event.target.value })} /></label>
       <label>Source URL (optional)<input type="url" value={documentInput.source_url} onChange={(event) => setDocumentInput({ ...documentInput, source_url: event.target.value })} /></label>
-      <label>Document text<textarea required minLength={20} maxLength={20000} value={documentInput.content} onChange={(event) => setDocumentInput({ ...documentInput, content: event.target.value })} /></label>
+      <label>Text or Markdown file<input key={evidenceUpload?.name ?? "empty"} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => setEvidenceUpload(event.currentTarget.files?.[0] ?? null)} /></label>
+      <p className="muted">Upload synthetic UTF-8 .txt or .md files up to 20,000 bytes. Supported jurisdictions, controls, and risk indicators are extracted as review cues; SHA-256 is stored separately for integrity verification.</p>
       <button type="submit" disabled={working || !evidenceUpload}>Upload and extract evidence</button>
     </form>)}
     {activeCase?.document_evidence?.length ? <section className="evidence-provenance">
       <p className="label">EVIDENCE PROVENANCE</p>
       <h2>Recorded evidence</h2>
-      <p className="muted">Server-calculated hashes are available for integrity review.</p>
-      <ul>{activeCase.document_evidence.map((evidence) => { const verification = evidenceIntegrity[evidence.document_id]; return <li key={evidence.document_id}><div><strong>{evidence.title}</strong><span>{evidence.ingestion_method === "uploaded_text" ? `${evidence.original_filename} · ${evidence.media_type}` : "Structured text"}</span><span>SHA-256: {evidence.content_sha256 ?? "not recorded"} · {evidence.content_size_bytes ?? 0} bytes</span></div>{activeActor?.role !== "administrator" && <button type="button" disabled={working} onClick={() => void verifyDocumentEvidence(evidence.document_id)}>Verify integrity</button>}{verification && <span className={verification.valid ? "integrity-valid" : "integrity-invalid"}>{verification.valid ? "Integrity verified" : "Integrity failed"}</span>}</li>; })}</ul>
+      <p className="muted">Extraction identifies supported review cues in the text. The SHA-256 fingerprint is separate and verifies whether the stored text has changed.</p>
+      <ul>{activeCase.document_evidence.map((evidence) => { const verification = evidenceIntegrity[evidence.document_id]; return <li key={evidence.document_id}><div><strong>{evidence.title}</strong><span>{evidence.ingestion_method === "uploaded_text" ? `${evidence.original_filename} · ${evidence.media_type}` : "Structured text"}</span><span>Content fingerprint (SHA-256): {evidence.content_sha256 ?? "not recorded"} · {evidence.content_size_bytes ?? 0} bytes</span><div className="extracted-cues"><strong>Extracted review cues</strong><span>Jurisdictions: {evidence.extracted_jurisdictions.length ? evidence.extracted_jurisdictions.join(", ") : "None detected"}</span><span>Controls: {evidence.extracted_controls.length ? evidence.extracted_controls.join(", ") : "None detected"}</span><span>Risk indicators: {evidence.risk_indicators.length ? evidence.risk_indicators.join(", ") : "None detected"}</span></div></div>{activeActor?.role !== "administrator" && <button type="button" disabled={working} onClick={() => void verifyDocumentEvidence(evidence.document_id)}>Verify integrity</button>}{verification && <span className={verification.valid ? "integrity-valid" : "integrity-invalid"}>{verification.valid ? "Integrity verified" : "Integrity failed"}</span>}</li>; })}</ul>
     </section> : null}
     <section className="workspace">
       <aside className="case-list" id="case-queue">
@@ -526,7 +544,7 @@ export default function Home() {
         </button>) : <p className="muted">No cases match this queue view.</p>}
       </aside>
       <section className="case-content" id="case-workspace">
-        {!activeCase ? <div className="empty"><span className="section-anchor" id="evidence-library" /><span className="section-anchor" id="audit-timeline" /><h2>Start a governed assessment</h2><p>Create a case or select one from the queue to review its evidence and audit history.</p></div> : <>
+        {!activeCase ? <div className="empty"><span className="section-anchor" id="evidence-library" /><span className="section-anchor" id="audit-timeline" /><h2>Start a governed assessment</h2><p>Create a case, then progress it through explicit human gates.</p></div> : <>
           <section className="summary">
             <div className="summary-detail"><p className="label">{activeCase.status.replaceAll("_", " ").toUpperCase()}</p><h2>{activeCase.title}</h2><div className="case-chips"><span>{activeCase.case_id}</span><span>Version {activeCase.version}</span><span>{activeCase.change_type.replaceAll("_", " ")}</span>{activeCase.intake?.jurisdictions.map((jurisdiction) => <span key={jurisdiction}>{jurisdiction}</span>)}{activeCase.intake?.target_launch_date && <span>Launch {new Date(activeCase.intake.target_launch_date).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</span>}</div></div>
             <div className="risk">
@@ -578,7 +596,7 @@ export default function Home() {
                 </div>
                 <button type="submit" disabled={working}>Run risk assessment</button>
               </form>)}
-              {activeCase.status === "analyst_review" && <>{onlyRoles(["analyst"], <><div className="actions"><button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/assessment-draft`, "Cited assessment draft prepared for analyst review.")}>Prepare cited draft</button><button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/send-to-committee`, "Case sent to committee.")}>Send to committee</button></div><form className="action-form" onSubmit={(event) => { event.preventDefault(); void advance(`/api/v1/cases/${activeCase.case_id}/risk-override`, "Analyst override recorded with rationale.", { ...overrideInput, analyst: activeActor?.display_name ?? "Analyst" }); }}><p className="label">ANALYST OVERRIDE</p>
+              {activeCase.status === "analyst_review" && <>{onlyRoles(["analyst"], <><p className="muted draft-purpose">Prepare cited draft builds a review brief from the deterministic assessment, recorded evidence, and eligible approved policy excerpts. It organizes analysis but does not decide or approve the case. Review every citation, evidence gap, and question before sending the case to committee.</p><div className="actions"><button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/assessment-draft`, "Cited assessment draft prepared for analyst review.")}>Prepare cited draft</button><button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/send-to-committee`, "Case sent to committee.")}>Send to committee</button></div><form className="action-form" onSubmit={(event) => { event.preventDefault(); void advance(`/api/v1/cases/${activeCase.case_id}/risk-override`, "Analyst override recorded with rationale.", { ...overrideInput, analyst: activeActor?.display_name ?? "Analyst" }); }}><p className="label">ANALYST OVERRIDE</p>
                 <label>Residual risk<input required type="number" min="1" max="5" value={overrideInput.residual_risk} onChange={(event) => setOverrideInput({ ...overrideInput, residual_risk: Number(event.target.value) })} /></label>
                 <label>Rationale<textarea required minLength={20} maxLength={2000} value={overrideInput.rationale} onChange={(event) => setOverrideInput({ ...overrideInput, rationale: event.target.value })} /></label>
                 <button type="submit" disabled={working}>Record override</button>
@@ -613,24 +631,23 @@ export default function Home() {
                   <ul>{activeCase.assessment_draft.evidence_context.map((context, index) => <li key={`${index}-${context}`}>{context}</li>)}</ul>
                 </details>
               </section>}</>}
-              {activeCase.status === "committee_decision" && onlyRoles(["committee_member"], <form className="action-form" onSubmit={(event) => { event.preventDefault(); const conditionalApproval = decisionInput.decision === "approve_with_conditions"; void advance(`/api/v1/cases/${activeCase.case_id}/committee-decision`, "Human committee decision recorded.", { decision: decisionInput.decision, rationale: decisionInput.rationale, committee_member: activeActor?.display_name ?? "Committee member", conditions: conditionalApproval ? [{ description: decisionInput.description, owner: decisionInput.owner, due_date: new Date(decisionInput.due_date).toISOString(), verification_criteria: decisionInput.verification_criteria }] : [] }); }}><p className="label">COMMITTEE DECISION</p>
+              {activeCase.status === "committee_decision" && onlyRoles(["committee_member"], <form className="action-form" onSubmit={(event) => { event.preventDefault(); const conditionalApproval = decisionInput.decision === "approve_with_conditions"; void advance(`/api/v1/cases/${activeCase.case_id}/committee-decision`, "Human committee decision recorded.", { decision: decisionInput.decision, rationale: decisionInput.rationale, committee_member: activeActor?.display_name ?? "", conditions: conditionalApproval ? [{ description: decisionInput.description, owner: decisionInput.owner, due_date: new Date(decisionInput.due_date).toISOString(), verification_criteria: decisionInput.verification_criteria }] : [] }); }}><p className="label">COMMITTEE DECISION</p>
                 <label>Decision<select value={decisionInput.decision} onChange={(event) => setDecisionInput({ ...decisionInput, decision: event.target.value })}><option value="approve">Approve</option><option value="reject">Reject</option><option value="defer">Defer</option><option value="approve_with_conditions">Approve with conditions</option></select></label>
                 <label>Decision rationale<textarea required minLength={20} maxLength={2000} value={decisionInput.rationale} onChange={(event) => setDecisionInput({ ...decisionInput, rationale: event.target.value })} /></label>
                 {decisionInput.decision === "approve_with_conditions" && <div className="condition-fields">
                   <label>Condition description<input required minLength={10} value={decisionInput.description} onChange={(event) => setDecisionInput({ ...decisionInput, description: event.target.value })} /></label>
-                  <label>Condition owner<input required minLength={3} value={decisionInput.owner} onChange={(event) => setDecisionInput({ ...decisionInput, owner: event.target.value })} /></label>
+                  <label>Condition owner<input required minLength={3} placeholder="Enter the accountable person or team" value={decisionInput.owner} onChange={(event) => setDecisionInput({ ...decisionInput, owner: event.target.value })} /></label>
                   <label>Due date<input required type="datetime-local" value={decisionInput.due_date} onChange={(event) => setDecisionInput({ ...decisionInput, due_date: event.target.value })} /></label>
                   <label>Verification criteria<textarea required minLength={10} maxLength={1000} value={decisionInput.verification_criteria} onChange={(event) => setDecisionInput({ ...decisionInput, verification_criteria: event.target.value })} /></label>
                 </div>}
                 <button type="submit" disabled={working}>Record committee decision</button>
               </form>)}
               {activeCase.status === "decided" && <><p className="decision">{activeCase.committee_decision?.decision.replaceAll("_", " ")} · {activeCase.committee_decision?.conditions.length ?? 0} condition(s)</p>
-                {activeCase.committee_decision?.conditions.map((condition) => <div className="condition" key={condition.condition_id}><strong>{condition.description}</strong><span>{condition.status} · {condition.owner} · due {new Date(condition.due_date).toLocaleDateString()}</span><small>{condition.verification_criteria}</small>{condition.status === "open" && onlyRoles(["analyst"], <button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/conditions/${condition.condition_id}/verify`, "Condition verification recorded.", { verifier: "Alex FCRM Analyst", evidence_summary: "Reviewed the test report confirming sanctions coverage for GB and US payment routes." })}>Verify condition</button>)}{condition.verified_by && <small>Verified by {condition.verified_by}</small>}</div>)}{onlyRoles(["auditor", "analyst", "committee_member"], <button type="button" disabled={working} onClick={() => void downloadEvidencePackage()}>Download evidence package</button>)}</>}
+                {activeCase.committee_decision?.conditions.map((condition) => <div className="condition" key={condition.condition_id}><strong>{condition.description}</strong><span>{condition.status} · {condition.owner} · due {new Date(condition.due_date).toLocaleDateString()}</span><small>{condition.verification_criteria}</small>{condition.status === "open" && onlyRoles(["analyst"], <div className="condition-verification"><label htmlFor={`condition-evidence-${condition.condition_id}`}>Verification evidence summary</label><textarea id={`condition-evidence-${condition.condition_id}`} required minLength={20} maxLength={2000} value={conditionEvidenceSummary} onChange={(event) => setConditionEvidenceSummary(event.target.value)} placeholder="Describe the evidence reviewed and how it meets the verification criteria." /><button type="button" disabled={working || conditionEvidenceSummary.trim().length < 20} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/conditions/${condition.condition_id}/verify`, "Condition verification recorded.", { verifier: activeActor?.display_name ?? "", evidence_summary: conditionEvidenceSummary })}>Verify condition</button></div>)}{condition.verified_by && <small>Verified by {condition.verified_by}</small>}</div>)}{onlyRoles(["auditor", "analyst", "committee_member"], <button type="button" disabled={working} onClick={() => void downloadEvidencePackage()}>Download evidence package</button>)}</>}
             </article><aside id="audit-timeline"><p className="label">AUDIT TIMELINE</p><ol className="timeline">{events.map((event) => <li key={event.event_id}><strong>{event.action.replaceAll("_", " ")}</strong><span>{event.actor}</span><time dateTime={event.occurred_at}>{new Date(event.occurred_at).toLocaleString()}</time></li>)}</ol></aside></section>
         </>}
       </section>
     </section>
-    {inbox}
       </main>
     </div>
   </div>;

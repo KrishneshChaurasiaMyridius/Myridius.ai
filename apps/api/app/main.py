@@ -169,20 +169,29 @@ def current_actor(
     if not isinstance(actor_id, str) or not actor_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token requires a subject claim.")
     verified_email = claims.get("email") if claims.get("email_verified") is True else None
-    verified_email = verified_email or (
-        claims.get("https://myridius.ai/claims/email")
-        if claims.get("https://myridius.ai/claims/email_verified") is True
-        else None
+    if not verified_email and claims.get("https://myridius.ai/claims/email_verified") is True:
+        verified_email = claims.get("https://myridius.ai/claims/email")
+    display_name = next(
+        (
+            value.strip()
+            for value in (
+                verified_email,
+                claims.get("preferred_username"),
+                claims.get("https://myridius.ai/claims/display_name"),
+                claims.get("name"),
+            )
+            if isinstance(value, str)
+            and value.strip()
+            and value.strip() != actor_id
+            and not value.strip().startswith("auth0|")
+        ),
+        None,
     )
-    display_name = (
-        verified_email
-        or claims.get("preferred_username")
-        or claims.get("https://myridius.ai/claims/display_name")
-        or claims.get("name")
-        or actor_id
-    )
-    if not isinstance(display_name, str):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC display-name claim must be text.")
+    if not display_name:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="OIDC identity requires a human-readable claim: verified email, preferred username, display name, or name. Opaque Auth0 subject IDs cannot be used as display names.",
+        )
     return Actor(actor_id=actor_id, display_name=display_name, role=role)
 
 
@@ -2208,6 +2217,7 @@ async def upload_case_document_evidence(
     is_synthetic: Annotated[bool, Form()],
     file: Annotated[UploadFile, File()],
     actor: Annotated[Actor, Depends(require_roles(Role.PRODUCT_OWNER))],
+    source_url: Annotated[str | None, Form()] = None,
 ) -> DocumentEvidence:
     if not is_synthetic:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only synthetic evidence may be uploaded.")
@@ -2232,6 +2242,7 @@ async def upload_case_document_evidence(
         title=title,
         document_type=document_type,
         content=content,
+        source_url=source_url or None,
         is_synthetic=True,
     )
     return case_store.add_uploaded_document_evidence(
