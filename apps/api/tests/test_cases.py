@@ -165,6 +165,8 @@ def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -
         assert kwargs["issuer"] == "https://identity.example.test"
         return {
             "sub": "oidc-product-owner",
+            "email": "owner@example.test",
+            "email_verified": True,
             display_name_claim: "Krishnesh Chaurasia",
             role_claim: "product_owner",
         }
@@ -187,7 +189,7 @@ def test_oidc_mode_maps_validated_claims_and_rejects_demo_headers(monkeypatch) -
     assert identity.status_code == 200
     assert identity.json() == {
         "actor_id": "oidc-product-owner",
-        "display_name": "Krishnesh Chaurasia",
+        "display_name": "owner@example.test",
         "role": "product_owner",
     }
     assert accepted.status_code == 201

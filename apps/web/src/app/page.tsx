@@ -40,7 +40,7 @@ type Case = {
   intake?: { title: string; change_type: string; business_rationale: string; business_owner: string; target_launch_date: string; jurisdictions: string[]; customer_exposure: string; delivery_channels: string[]; payment_characteristics: string[]; third_parties: string[]; proposed_controls: string[]; attachment_urls: string[] };
   document_evidence?: { document_id: string; title: string; document_type: string; content_sha256?: string; content_size_bytes?: number; original_filename?: string; media_type?: string; ingestion_method: "structured_text" | "uploaded_text"; extracted_jurisdictions: string[]; extracted_controls: string[]; risk_indicators: string[] }[];
 };
-type AuditEvent = { event_id: string; action: string; actor: string };
+type AuditEvent = { event_id: string; action: string; actor: string; occurred_at: string };
 type EvidenceIntegrity = { document_id: string; valid: boolean; content_sha256?: string; content_size_bytes?: number };
 type RiskConfiguration = {
   version: string;
@@ -58,21 +58,25 @@ type WorkflowNotification = { notification_id: string; case_id: string; action: 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const steps = ["Intake", "Evidence", "Risk assessment", "Analyst review", "Committee decision"];
 const initialIntake = {
-  title: "Synthetic cross-border payments feature",
+  title: "Cross-border payments feature",
   change_type: "product_feature",
-  business_rationale: "Enable synthetic cross-border payment simulation for the workbench demonstration.",
+  business_rationale: "Enable cross-border payment processing for business customers.",
   business_owner: "Taylor Product Owner",
   target_launch_date: "2026-11-15T00:00",
   jurisdictions: "GB, US",
   customer_exposure: "moderate",
   delivery_channels: "web",
   payment_characteristics: "cross-border",
-  third_parties: "Synthetic payment processor",
+  third_parties: "Payment processor",
   proposed_controls: "Sanctions screening, Transaction monitoring",
-  attachment_urls: "https://example.test/synthetic-change-brief.pdf",
+  attachment_urls: "https://example.test/change-brief.pdf",
 };
 const riskFactors = ["customer", "product", "channel", "geography", "transaction", "third_party"] as const;
 const applicationRoles = ["product_owner", "analyst", "committee_member", "auditor", "administrator"];
+
+function IntakeField({ label, help, children, className }: { label: string; help: string; children: ReactNode; className?: string }) {
+  return <label className={className}><span className="field-label-row"><span>{label}</span><details className="field-tip"><summary aria-label="Show field guidance" title={`Help: ${label}`}>i</summary><span role="tooltip">{help}</span></details></span>{children}</label>;
+}
 
 function asList(value: string) {
   return value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
@@ -98,12 +102,12 @@ export default function Home() {
   const [riskInput, setRiskInput] = useState({ customer: 4, product: 5, channel: 3, geography: 4, transaction: 5, third_party: 3, control_effectiveness: 2 });
   const [overrideInput, setOverrideInput] = useState({ residual_risk: 4, rationale: "Cross-border launch uncertainty warrants a higher residual-risk rating for committee review." });
   const [decisionInput, setDecisionInput] = useState({ decision: "approve_with_conditions", rationale: "Approval is appropriate once the specified control verification is completed.", description: "Verify sanctions-screening coverage before launch.", owner: "Taylor Product Owner", due_date: "2026-10-31T00:00", verification_criteria: "Provide a test report demonstrating coverage for GB and US payment routes." });
-  const [message, setMessage] = useState("Create a synthetic case to begin the governed demo.");
+  const [message, setMessage] = useState("Create a case to begin the governed workflow.");
   const [working, setWorking] = useState(false);
   const [intake, setIntake] = useState(initialIntake);
   const [queueSearch, setQueueSearch] = useState("");
   const [queueStatus, setQueueStatus] = useState<CaseStatus | "all">("all");
-  const [documentInput, setDocumentInput] = useState({ title: "Synthetic control test report", document_type: "control_test", content: "Synthetic GB and US cross-border testing confirms sanctions screening and transaction monitoring.", source_url: "https://example.test/synthetic-control-report.pdf" });
+  const [documentInput, setDocumentInput] = useState({ title: "Control test report", document_type: "control_test", content: "GB and US cross-border testing confirms sanctions screening and transaction monitoring.", source_url: "https://example.test/control-report.pdf" });
   const [evidenceUpload, setEvidenceUpload] = useState<File | null>(null);
   const [evidenceIntegrity, setEvidenceIntegrity] = useState<Record<string, EvidenceIntegrity>>({});
   const [policySources, setPolicySources] = useState<PolicySource[]>([]);
@@ -254,7 +258,7 @@ export default function Home() {
         }),
       }, true);
       await Promise.all([loadQueue(), loadCase(created.case_id)]);
-      setMessage(updatingDraft ? "Draft intake revised and versioned." : "Synthetic intake created. Product owner submission is now required.");
+      setMessage(updatingDraft ? "Draft intake revised and versioned." : "Intake created. Product owner submission is now required.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create demo case."); }
     finally { setWorking(false); }
   }
@@ -280,7 +284,7 @@ export default function Home() {
         body: JSON.stringify({ ...documentInput, source_url: documentInput.source_url || undefined, is_synthetic: true }),
       }, true);
       await loadCase(activeCase.case_id);
-      setMessage("Synthetic document evidence recorded and extracted for review.");
+      setMessage("Document evidence recorded and extracted for review.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to record document evidence."); }
     finally { setWorking(false); }
   }
@@ -288,11 +292,11 @@ export default function Home() {
   async function uploadDocumentEvidence(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeCase || !evidenceUpload) {
-      setMessage("Select a synthetic UTF-8 text or Markdown document to upload.");
+      setMessage("Select a UTF-8 text or Markdown document to upload.");
       return;
     }
     if (!['text/plain', 'text/markdown'].includes(evidenceUpload.type)) {
-      setMessage("Only synthetic plain-text or Markdown evidence can be uploaded.");
+      setMessage("Only plain-text or Markdown evidence can be uploaded.");
       return;
     }
     setWorking(true);
@@ -313,7 +317,7 @@ export default function Home() {
       }
       setEvidenceUpload(null);
       await loadCase(activeCase.case_id);
-      setMessage("Synthetic text evidence uploaded, hashed, and extracted for review.");
+      setMessage("Text evidence uploaded, hashed, and extracted for review.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to upload document evidence."); }
     finally { setWorking(false); }
   }
@@ -396,7 +400,7 @@ export default function Home() {
 
   function onlyRoles(roles: string[], content: ReactNode) {
     if (activeActor && roles.includes(activeActor.role)) return content;
-    return <p className="access-note">Required role: {roles.map((role) => role.replaceAll("_", " ")).join(" or ")}</p>;
+    return null;
   }
 
   const currentStep = activeCase ? stepFor(activeCase.status) : -1;
@@ -418,12 +422,16 @@ export default function Home() {
   if (auth.mode === "oidc" && !auth.isAuthenticated) return <main className="auth-gate"><p className="eyebrow">SECURE WORKBENCH</p><h1>Risk Assessment Workbench</h1><p>Sign in with your assigned FCRM role to continue.</p><button type="button" onClick={() => void auth.login()}>Sign in</button></main>;
   if (auth.mode === "oidc" && !activeActor) return <main className="auth-gate"><p className="eyebrow">IDENTITY NOT AUTHORIZED</p><h1>Could not validate your workbench identity</h1><p>{oidcIdentityError || `The API token must include ${FCRM_ROLE_CLAIM} with one of: ${applicationRoles.join(", ")}.`}</p><button type="button" onClick={auth.logout}>Sign out</button></main>;
 
+  const unreadHandoffs = notifications.filter((notification) => !notification.read_at).length;
+  const inbox = <details className="inbox" id="work-inbox">
+    <summary><span className="label">WORKFLOW INBOX</span><span>{unreadHandoffs} open handoff(s)</span></summary>
+    {notifications.length ? <ul>{notifications.slice(0, 5).map((notification) => <li className={notification.read_at ? "read" : "unread"} key={notification.notification_id}><div><strong>{notification.action.replaceAll("_", " ")}</strong><span>{notification.message} · {notification.case_id}</span></div>{notification.read_at ? <small>Acknowledged</small> : <button type="button" disabled={working} onClick={() => void acknowledgeNotification(notification)}>Open and acknowledge</button>}</li>)}</ul> : <p className="muted">No workflow handoffs for this role.</p>}
+  </details>;
+
   return <main>
-    <header><div><p className="eyebrow">FCRM GOVERNED WORKFLOW</p><h1>Risk Assessment Workbench</h1></div><div className="identity">{auth.mode === "demo" ? <><span className="environment">SYNTHETIC DEMO</span><label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label></> : <><span className="environment">OIDC AUTHENTICATED</span><span>{activeActor?.display_name} · {activeActor?.role.replaceAll("_", " ")}</span><button type="button" onClick={auth.logout}>Sign out</button></>}</div></header>
+    <header><div><p className="brand">Myridius.ai <span>FCRM workbench</span></p><h1>Risk Assessment Workbench</h1></div><div className="identity">{auth.mode === "demo" ? <><span className="environment">DEMO MODE</span><label>Acting as<select value={actorId} onChange={(event) => setActorId(event.target.value)}>{actors.map((actor) => <option value={actor.actor_id} key={actor.actor_id}>{actor.display_name} · {actor.role.replaceAll("_", " ")}</option>)}</select></label></> : <><span className="environment">OIDC AUTHENTICATED</span><span>{activeActor?.display_name} · {activeActor?.role.replaceAll("_", " ")}</span><button type="button" onClick={auth.logout}>Sign out</button></>}</div></header>
     <section className="demo-bar" aria-live="polite"><span>{message}</span></section>
     {roleNavigation.length > 0 && <nav className="role-navigation" aria-label={`${activeActor?.role.replaceAll("_", " ")} workflow navigation`}><span>WORKSPACE</span>{roleNavigation.map((item) => <a href={`#${item.target}`} key={item.target}>{item.label}</a>)}</nav>}
-    <section className="inbox" id="work-inbox">
-      <div><p className="label">WORKFLOW INBOX</p><h2>{notifications.filter((notification) => !notification.read_at).length} open handoff(s)</h2></div>{notifications.length ? <ul>{notifications.slice(0, 5).map((notification) => <li className={notification.read_at ? "read" : "unread"} key={notification.notification_id}><div><strong>{notification.action.replaceAll("_", " ")}</strong><span>{notification.message} · {notification.case_id}</span></div>{notification.read_at ? <small>Acknowledged</small> : <button type="button" disabled={working} onClick={() => void acknowledgeNotification(notification)}>Open and acknowledge</button>}</li>)}</ul> : <p className="muted">No workflow handoffs for this role.</p>}</section>
     {riskConfiguration && onlyRoles(["analyst", "committee_member", "administrator"], <section className="configuration" id="risk-configuration">
       <div><p className="label">ACTIVE SCORING CONFIGURATION</p><h2>{riskConfiguration.version}</h2><p className="muted">Updated by {riskConfiguration.updated_by} · {new Date(riskConfiguration.updated_at).toLocaleDateString()}</p></div>
       <dl>
@@ -435,7 +443,7 @@ export default function Home() {
     </section>)}
     {onlyRoles(["administrator", "committee_member"], <section className="policy-register" id="policy-library">
       <div><p className="label">GOVERNED POLICY REGISTER</p><h2>Policy source review</h2><p className="muted">Sourced materials require committee approval before they can be cited in new drafts.</p></div>
-      <p className="muted">Register source-linked revisions. Committee approval activates a revision and retires the prior approved version.</p><p className="policy-warning">Synthetic policy entries are demo-only, are not authoritative guidance, and are excluded from OIDC assessments.</p>
+      <p className="muted">Register source-linked revisions. Committee approval activates a revision and retires the prior approved version.</p><p className="policy-warning">Sample policy entries are for demonstration only, are not authoritative guidance, and are excluded from OIDC assessments.</p>
       {activeActor?.role === "administrator" && <form className="policy-form" onSubmit={(event) => void createOfficialPolicySource(event)}>
         <label>Source ID<input required pattern="[A-Z0-9-]{4,80}" value={officialPolicyInput.source_id} onChange={(event) => setOfficialPolicyInput({ ...officialPolicyInput, source_id: event.target.value })} /></label>
         <label>Topic<input required value={officialPolicyInput.topic} onChange={(event) => setOfficialPolicyInput({ ...officialPolicyInput, topic: event.target.value })} /></label>
@@ -446,26 +454,26 @@ export default function Home() {
         <label>Version<input type="number" min="1" value={officialPolicyInput.source_version} readOnly /></label>
         <button type="submit" disabled={working}>Register source for review</button>
       </form>}
-      <ul className="policy-list">{policySources.map((source) => <li key={source.source_id}><strong>{source.title}</strong><span>{source.source_id} · v{source.source_version} · {source.topic} · effective {new Date(source.effective_from).toLocaleDateString()} · {source.synthetic_data ? "synthetic demo only · " : ""}{source.retired_at ? source.superseded_by_source_id ? `superseded by ${source.superseded_by_source_id}` : "retired" : source.approved ? "approved" : "pending review"}</span>{source.source_url && <a href={source.source_url} target="_blank" rel="noreferrer">Open source</a>}{activeActor?.role === "committee_member" && !source.approved && !source.retired_at && <button type="button" disabled={working} onClick={() => void approvePolicySource(source.source_id)}>Approve</button>}{activeActor?.role === "administrator" && source.approved && <button type="button" disabled={working} onClick={() => void retirePolicySource(source.source_id)}>Retire</button>}</li>)}</ul>
+      <ul className="policy-list">{policySources.map((source) => <li key={source.source_id}><strong>{source.title}</strong><span>{source.source_id} · v{source.source_version} · {source.topic} · effective {new Date(source.effective_from).toLocaleDateString()} · {source.synthetic_data ? "demo sample · " : ""}{source.retired_at ? source.superseded_by_source_id ? `superseded by ${source.superseded_by_source_id}` : "retired" : source.approved ? "approved" : "pending review"}</span>{source.source_url && <a href={source.source_url} target="_blank" rel="noreferrer">Open source</a>}{activeActor?.role === "committee_member" && !source.approved && !source.retired_at && <button type="button" disabled={working} onClick={() => void approvePolicySource(source.source_id)}>Approve</button>}{activeActor?.role === "administrator" && source.approved && <button type="button" disabled={working} onClick={() => void retirePolicySource(source.source_id)}>Retire</button>}</li>)}</ul>
     </section>)}
     {onlyRoles(["product_owner"], <form className="intake-form" id="product-intake" onSubmit={(event) => void createCase(event)}>
-      <div><p className="label">PRODUCT OWNER INTAKE</p><h2>{activeCase?.status === "draft" ? `Revise ${activeCase.case_id}` : "Create synthetic change case"}</h2><p className="muted">All case data is synthetic. Enter multiple values separated by commas or new lines.</p></div>
-      <label>Change title<input required minLength={8} maxLength={160} value={intake.title} onChange={(event) => setIntake({ ...intake, title: event.target.value })} /></label>
-      <label>Change type<select value={intake.change_type} onChange={(event) => setIntake({ ...intake, change_type: event.target.value })}><option value="product">Product</option><option value="product_feature">Product feature</option><option value="process">Process</option><option value="vendor">Vendor</option><option value="geography">Geography</option><option value="customer_segment">Customer segment</option></select></label>
-      <label>Business owner<input required minLength={3} readOnly={auth.mode === "oidc"} aria-describedby={auth.mode === "oidc" ? "business-owner-help" : undefined} value={auth.mode === "oidc" ? activeActor?.display_name ?? intake.business_owner : intake.business_owner} onChange={(event) => setIntake({ ...intake, business_owner: event.target.value })} />{auth.mode === "oidc" && <span id="business-owner-help" className="field-help">Set from your verified workbench identity.</span>}</label>
-      <label>Target launch<input required type="datetime-local" value={intake.target_launch_date} onChange={(event) => setIntake({ ...intake, target_launch_date: event.target.value })} /></label>
-      <label>Customer exposure<select value={intake.customer_exposure} onChange={(event) => setIntake({ ...intake, customer_exposure: event.target.value })}><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option></select></label>
-      <label>Jurisdictions<input required value={intake.jurisdictions} onChange={(event) => setIntake({ ...intake, jurisdictions: event.target.value })} /></label>
-      <label>Delivery channels<input required value={intake.delivery_channels} onChange={(event) => setIntake({ ...intake, delivery_channels: event.target.value })} /></label>
-      <label>Payment characteristics<input required value={intake.payment_characteristics} onChange={(event) => setIntake({ ...intake, payment_characteristics: event.target.value })} /></label>
-      <label>Third parties{intake.change_type === "vendor" && <span className="required">Required for vendor changes</span>}<input required={intake.change_type === "vendor"} value={intake.third_parties} onChange={(event) => setIntake({ ...intake, third_parties: event.target.value })} /></label>
-      <label>Proposed controls<input required value={intake.proposed_controls} onChange={(event) => setIntake({ ...intake, proposed_controls: event.target.value })} /></label>
-      <label>Attachment URLs<input type="url" value={intake.attachment_urls} onChange={(event) => setIntake({ ...intake, attachment_urls: event.target.value })} /></label>
-      <label className="rationale">Business rationale<textarea required minLength={20} maxLength={2000} value={intake.business_rationale} onChange={(event) => setIntake({ ...intake, business_rationale: event.target.value })} /></label>
-      {onlyRoles(["product_owner"], <div className="intake-actions"><button type="submit" disabled={working}>{activeCase?.status === "draft" ? "Save draft revision" : "Create synthetic intake"}</button>{activeCase?.status === "draft" && <button className="secondary" type="button" disabled={working} onClick={() => { setActiveCase(null); setEvents([]); setIntake(initialIntake); }}>Start new intake</button>}</div>)}
+      <div><p className="label">PRODUCT OWNER INTAKE</p><h2>{activeCase?.status === "draft" ? `Revise ${activeCase.case_id}` : "Create change case"}</h2><p className="muted">Describe the proposed change and its expected customer, operational, and control impact.</p></div>
+      <IntakeField label="Change title" help="Use a short, specific name that identifies the product, process, vendor, or customer change."><input required minLength={8} maxLength={160} value={intake.title} onChange={(event) => setIntake({ ...intake, title: event.target.value })} /></IntakeField>
+      <IntakeField label="Change type" help="Choose the category that best describes the primary change."><select value={intake.change_type} onChange={(event) => setIntake({ ...intake, change_type: event.target.value })}><option value="product">Product</option><option value="product_feature">Product feature</option><option value="process">Process</option><option value="vendor">Vendor</option><option value="geography">Geography</option><option value="customer_segment">Customer segment</option></select></IntakeField>
+      <IntakeField label="Business owner" help="The signed-in account responsible for this intake and follow-up, filled from your verified identity."><input required minLength={3} readOnly={auth.mode === "oidc"} value={auth.mode === "oidc" ? activeActor?.display_name ?? intake.business_owner : intake.business_owner} onChange={(event) => setIntake({ ...intake, business_owner: event.target.value })} /></IntakeField>
+      <IntakeField label="Target launch" help="Enter the expected date and time the change will reach customers or production."><input required type="datetime-local" value={intake.target_launch_date} onChange={(event) => setIntake({ ...intake, target_launch_date: event.target.value })} /></IntakeField>
+      <IntakeField label="Customer exposure" help="Estimate customer impact if the change creates financial-crime risk: low, moderate, or high."><select value={intake.customer_exposure} onChange={(event) => setIntake({ ...intake, customer_exposure: event.target.value })}><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option></select></IntakeField>
+      <IntakeField label="Jurisdictions" help="List countries or territories where the change will operate, separated by commas."><input required value={intake.jurisdictions} onChange={(event) => setIntake({ ...intake, jurisdictions: event.target.value })} /></IntakeField>
+      <IntakeField label="Delivery channels" help="List how customers access the product, such as web, mobile, branch, or API."><input required value={intake.delivery_channels} onChange={(event) => setIntake({ ...intake, delivery_channels: event.target.value })} /></IntakeField>
+      <IntakeField label="Payment characteristics" help="Describe payment types, flows, currencies, speed, or cross-border features."><input required value={intake.payment_characteristics} onChange={(event) => setIntake({ ...intake, payment_characteristics: event.target.value })} /></IntakeField>
+      <IntakeField label="Third parties" help="List vendors or other external parties involved. Vendor changes require at least one party."><>{intake.change_type === "vendor" && <span className="required">Required for vendor changes</span>}<input required={intake.change_type === "vendor"} value={intake.third_parties} onChange={(event) => setIntake({ ...intake, third_parties: event.target.value })} /></></IntakeField>
+      <IntakeField label="Proposed controls" help="List safeguards planned to prevent or detect financial-crime risks, separated by commas."><input required value={intake.proposed_controls} onChange={(event) => setIntake({ ...intake, proposed_controls: event.target.value })} /></IntakeField>
+      <IntakeField label="Attachment URLs" help="Optionally link supporting briefs, diagrams, test results, or control documentation."><input type="url" value={intake.attachment_urls} onChange={(event) => setIntake({ ...intake, attachment_urls: event.target.value })} /></IntakeField>
+      <IntakeField className="rationale" label="Business rationale" help="Explain the business need, expected benefit, affected customers, and material operational or risk changes."><textarea required minLength={20} maxLength={2000} value={intake.business_rationale} onChange={(event) => setIntake({ ...intake, business_rationale: event.target.value })} /></IntakeField>
+      <div className="intake-actions"><button type="submit" disabled={working}>{activeCase?.status === "draft" ? "Save draft revision" : "Create intake"}</button>{activeCase?.status === "draft" && <button className="secondary" type="button" disabled={working} onClick={() => { setActiveCase(null); setEvents([]); setIntake(initialIntake); }}>Start new intake</button>}</div>
     </form>)}
-    {activeCase?.status === "draft" && onlyRoles(["product_owner"], <form className="action-form evidence-upload" id="synthetic-evidence-upload" onSubmit={(event) => void uploadDocumentEvidence(event)}>
-      <p className="label">SYNTHETIC TEXT UPLOAD</p>
+    {activeCase?.status === "draft" && onlyRoles(["product_owner"], <form className="action-form evidence-upload" id="evidence-upload" onSubmit={(event) => void uploadDocumentEvidence(event)}>
+      <p className="label">TEXT DOCUMENT UPLOAD</p>
       <label>Document title<input required minLength={5} maxLength={200} value={documentInput.title} onChange={(event) => setDocumentInput({ ...documentInput, title: event.target.value })} /></label>
       <label>Document type<input required minLength={3} maxLength={100} value={documentInput.document_type} onChange={(event) => setDocumentInput({ ...documentInput, document_type: event.target.value })} /></label>
       <label>Source URL (optional)<input type="url" value={documentInput.source_url} onChange={(event) => setDocumentInput({ ...documentInput, source_url: event.target.value })} /></label>
@@ -476,7 +484,7 @@ export default function Home() {
       <p className="label">EVIDENCE PROVENANCE</p>
       <h2>Recorded evidence</h2>
       <p className="muted">Server-calculated hashes are available for integrity review.</p>
-      <ul>{activeCase.document_evidence.map((evidence) => { const verification = evidenceIntegrity[evidence.document_id]; return <li key={evidence.document_id}><div><strong>{evidence.title}</strong><span>{evidence.ingestion_method === "uploaded_text" ? `${evidence.original_filename} · ${evidence.media_type}` : "Structured synthetic text"}</span><span>SHA-256: {evidence.content_sha256 ?? "not recorded"} · {evidence.content_size_bytes ?? 0} bytes</span></div>{activeActor?.role !== "administrator" && <button type="button" disabled={working} onClick={() => void verifyDocumentEvidence(evidence.document_id)}>Verify integrity</button>}{verification && <span className={verification.valid ? "integrity-valid" : "integrity-invalid"}>{verification.valid ? "Integrity verified" : "Integrity failed"}</span>}</li>; })}</ul>
+      <ul>{activeCase.document_evidence.map((evidence) => { const verification = evidenceIntegrity[evidence.document_id]; return <li key={evidence.document_id}><div><strong>{evidence.title}</strong><span>{evidence.ingestion_method === "uploaded_text" ? `${evidence.original_filename} · ${evidence.media_type}` : "Structured text"}</span><span>SHA-256: {evidence.content_sha256 ?? "not recorded"} · {evidence.content_size_bytes ?? 0} bytes</span></div>{activeActor?.role !== "administrator" && <button type="button" disabled={working} onClick={() => void verifyDocumentEvidence(evidence.document_id)}>Verify integrity</button>}{verification && <span className={verification.valid ? "integrity-valid" : "integrity-invalid"}>{verification.valid ? "Integrity verified" : "Integrity failed"}</span>}</li>; })}</ul>
     </section> : null}
     <section className="workspace">
       <aside className="case-list" id="case-queue">
@@ -489,12 +497,12 @@ export default function Home() {
           </select>
         </div>
         {visibleCases.length ? visibleCases.map((item) => <button className={activeCase?.case_id === item.case_id ? "case-item selected" : "case-item"} type="button" key={item.case_id} onClick={() => void loadCase(item.case_id)}>
-          <strong>{item.title}</strong>
+          <span className="case-title">{item.title}</span>
           <span>{item.case_id} · {item.status.replace("_", " ")}</span>
         </button>) : <p className="muted">No cases match this queue view.</p>}
       </aside>
       <section className="case-content" id="case-workspace">
-        {!activeCase ? <div className="empty"><h2>Start a governed assessment</h2><p>Create a synthetic case, then progress it through explicit human gates.</p></div> : <>
+        {!activeCase ? <div className="empty"><h2>Start a governed assessment</h2><p>Create a case, then progress it through explicit human gates.</p></div> : <>
           <section className="summary">
             <div><p className="label">{activeCase.status.replace("_", " ").toUpperCase()}</p><h2>{activeCase.title}</h2><p className="muted">{activeCase.case_id} · Version {activeCase.version} · {activeCase.change_type.replace("_", " ")}</p></div>
             <div className="risk">
@@ -515,7 +523,7 @@ export default function Home() {
               <div><dt>Evidence records</dt><dd>{activeCase.document_evidence?.length ?? 0}</dd></div>
               <div><dt>Policy citations</dt><dd>{activeCase.assessment_draft?.citations.length ?? 0}</dd></div>
             </dl>
-            {activeCase.document_evidence?.length ? <ul>{activeCase.document_evidence.map((evidence) => <li key={evidence.document_id}><strong>{evidence.title}</strong><span>{evidence.document_type} · controls: {evidence.extracted_controls.join(", ") || "none detected"} · indicators: {evidence.risk_indicators.join(", ") || "none detected"}</span></li>)}</ul> : <p className="muted">No structured synthetic evidence recorded.</p>}
+            {activeCase.document_evidence?.length ? <ul>{activeCase.document_evidence.map((evidence) => <li key={evidence.document_id}><strong>{evidence.title}</strong><span>{evidence.document_type} · controls: {evidence.extracted_controls.join(", ") || "none detected"} · indicators: {evidence.risk_indicators.join(", ") || "none detected"}</span></li>)}</ul> : <p className="muted">No structured evidence recorded.</p>}
           </section>
           {activeCase.risk_assessment?.factor_scores && <section className="risk-breakdown">
             <div><p className="label">DETERMINISTIC RISK BREAKDOWN</p><h2>How the score was calculated</h2><p className="muted">Analyst-entered factor scores are combined using the configuration saved with this assessment. Controls reduce, but never eliminate, residual risk.</p></div>
@@ -532,14 +540,13 @@ export default function Home() {
                 <div><span>Control effectiveness</span><strong>{activeCase.risk_assessment?.control_effectiveness ?? "-"} / 4</strong></div>
                 <div><span>Audit events</span><strong>{events.length}</strong></div>
               </div>
-              {activeCase.status === "draft" && onlyRoles(["product_owner"], <><form className="action-form" onSubmit={(event) => void addDocumentEvidence(event)}>
-                <p className="label">SYNTHETIC DOCUMENT EVIDENCE</p>
+              {activeCase.status === "draft" && onlyRoles(["product_owner"], <><form className="action-form draft-evidence-form" id="record-evidence-form" onSubmit={(event) => void addDocumentEvidence(event)}>
+                <p className="label">DOCUMENT EVIDENCE</p>
                 <label>Document title<input required minLength={5} maxLength={200} value={documentInput.title} onChange={(event) => setDocumentInput({ ...documentInput, title: event.target.value })} /></label>
                 <label>Document type<input required minLength={3} maxLength={100} value={documentInput.document_type} onChange={(event) => setDocumentInput({ ...documentInput, document_type: event.target.value })} /></label>
                 <label>Source URL (optional)<input type="url" value={documentInput.source_url} onChange={(event) => setDocumentInput({ ...documentInput, source_url: event.target.value })} /></label>
                 <label>Document text<textarea required minLength={20} maxLength={20000} value={documentInput.content} onChange={(event) => setDocumentInput({ ...documentInput, content: event.target.value })} /></label>
-                <button type="submit" disabled={working}>Record and extract evidence</button>
-              </form><button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/submit`, "Case submitted for intake review.")}>Submit for intake review</button></>)}
+              </form><div className="draft-actions"><button type="submit" form="record-evidence-form" disabled={working}>Record and extract evidence</button><button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/submit`, "Case submitted for intake review.")}>Submit for intake review</button></div></>)}
               {activeCase.status === "intake_review" && onlyRoles(["analyst"], <form className="action-form" onSubmit={(event) => { event.preventDefault(); void advance(`/api/v1/cases/${activeCase.case_id}/risk-assessment`, "Deterministic assessment completed; analyst review is required.", { customer_risk: riskInput.customer, product_risk: riskInput.product, channel_risk: riskInput.channel, geography_risk: riskInput.geography, transaction_risk: riskInput.transaction, third_party_risk: riskInput.third_party, control_effectiveness: riskInput.control_effectiveness, analyst: activeActor?.display_name ?? "Analyst" }); }}><p className="label">ANALYST RISK INPUTS</p>
                 <div className="risk-inputs">
                   {riskFactors.map((factor) => <label key={factor}>{factor.replace("_", " ")} risk<input required type="number" min="1" max="5" value={riskInput[factor]} onChange={(event) => setRiskInput({ ...riskInput, [factor]: Number(event.target.value) })} /></label>)}<label>Control effectiveness<input required type="number" min="0" max="4" value={riskInput.control_effectiveness} onChange={(event) => setRiskInput({ ...riskInput, control_effectiveness: Number(event.target.value) })} /></label>
@@ -572,7 +579,7 @@ export default function Home() {
                 </div>
                 <div className="draft-section">
                   <h3>Approved source excerpts</h3>
-                  <ul className="citation-list">{activeCase.assessment_draft.citations.map((citation) => <li key={citation.source_id}><strong>{citation.title}</strong><span>{citation.source_id} · v{citation.source_version} · {citation.topic}</span>{citation.synthetic_data && <small className="synthetic-source-label">SYNTHETIC DEMO ONLY · NOT AUTHORITATIVE</small>}<p>{citation.excerpt}</p>{citation.source_url && <a href={citation.source_url} target="_blank" rel="noreferrer">Open source</a>}</li>)}</ul>
+                  <ul className="citation-list">{activeCase.assessment_draft.citations.map((citation) => <li key={citation.source_id}><strong>{citation.title}</strong><span>{citation.source_id} · v{citation.source_version} · {citation.topic}</span>{citation.synthetic_data && <small className="synthetic-source-label">DEMO SAMPLE · NOT AUTHORITATIVE</small>}<p>{citation.excerpt}</p>{citation.source_url && <a href={citation.source_url} target="_blank" rel="noreferrer">Open source</a>}</li>)}</ul>
                 </div>
                 <details className="draft-context">
                   <summary>Generation context and provenance</summary>
@@ -594,9 +601,10 @@ export default function Home() {
               </form>)}
               {activeCase.status === "decided" && <><p className="decision">{activeCase.committee_decision?.decision.replaceAll("_", " ")} · {activeCase.committee_decision?.conditions.length ?? 0} condition(s)</p>
                 {activeCase.committee_decision?.conditions.map((condition) => <div className="condition" key={condition.condition_id}><strong>{condition.description}</strong><span>{condition.status} · {condition.owner} · due {new Date(condition.due_date).toLocaleDateString()}</span><small>{condition.verification_criteria}</small>{condition.status === "open" && onlyRoles(["analyst"], <button type="button" disabled={working} onClick={() => void advance(`/api/v1/cases/${activeCase.case_id}/conditions/${condition.condition_id}/verify`, "Condition verification recorded.", { verifier: "Alex FCRM Analyst", evidence_summary: "Reviewed the test report confirming sanctions coverage for GB and US payment routes." })}>Verify condition</button>)}{condition.verified_by && <small>Verified by {condition.verified_by}</small>}</div>)}{onlyRoles(["auditor", "analyst", "committee_member"], <button type="button" disabled={working} onClick={() => void downloadEvidencePackage()}>Download evidence package</button>)}</>}
-            </article><aside id="audit-timeline"><p className="label">AUDIT TIMELINE</p><ol className="timeline">{events.map((event) => <li key={event.event_id}><strong>{event.action.replaceAll("_", " ")}</strong><span>{event.actor}</span></li>)}</ol></aside></section>
+            </article><aside id="audit-timeline"><p className="label">AUDIT TIMELINE</p><ol className="timeline">{events.map((event) => <li key={event.event_id}><strong>{event.action.replaceAll("_", " ")}</strong><span>{event.actor}</span><time dateTime={event.occurred_at}>{new Date(event.occurred_at).toLocaleString()}</time></li>)}</ol></aside></section>
         </>}
       </section>
     </section>
+    {inbox}
   </main>;
 }

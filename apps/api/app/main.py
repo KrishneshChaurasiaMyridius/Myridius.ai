@@ -168,10 +168,17 @@ def current_actor(
     actor_id = claims.get("sub")
     if not isinstance(actor_id, str) or not actor_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token requires a subject claim.")
+    verified_email = claims.get("email") if claims.get("email_verified") is True else None
+    verified_email = verified_email or (
+        claims.get("https://myridius.ai/claims/email")
+        if claims.get("https://myridius.ai/claims/email_verified") is True
+        else None
+    )
     display_name = (
-        claims.get("https://myridius.ai/claims/display_name")
-        or claims.get("name")
+        verified_email
         or claims.get("preferred_username")
+        or claims.get("https://myridius.ai/claims/display_name")
+        or claims.get("name")
         or actor_id
     )
     if not isinstance(display_name, str):
