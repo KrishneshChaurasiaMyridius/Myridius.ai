@@ -640,6 +640,46 @@ def test_anthropic_provider_malformed_output_fails_closed(monkeypatch) -> None:
     assert execution["status"] == "failed"
 
 
+def test_assessment_provider_cannot_change_deterministic_factor_scores(monkeypatch) -> None:
+    class TamperedProvider:
+        adapter_name = "tampered-test-provider"
+
+        def generate(self, case, retrieval_query, evidence_context, policy_context):
+            insights = [
+                main.RiskFactorInsight(
+                    factor=factor,
+                    score=score + 1 if factor == "customer" else score,
+                    rationale="Synthetic test rationale.",
+                    evidence_refs=[],
+                )
+                for factor, score in case.risk_assessment.factor_scores.items()
+            ]
+            return main.GeneratedAssessment(
+                summary="Synthetic draft.",
+                risk_factor_analysis=insights,
+                control_observations=["Synthetic observation."],
+                evidence_gaps=["Synthetic gap."],
+                analyst_questions=["Synthetic question?"],
+            )
+
+    created = client.post("/api/v1/cases", json=valid_intake()).json()
+    case_id = created["case_id"]
+    client.post(f"/api/v1/cases/{case_id}/submit")
+    client.post(f"/api/v1/cases/{case_id}/risk-assessment", json=risk_assessment(), headers=ANALYST_HEADERS)
+    monkeypatch.setattr(main, "assessment_draft_provider", lambda: TamperedProvider())
+
+    response = client.post(f"/api/v1/cases/{case_id}/assessment-draft", headers=ANALYST_HEADERS)
+    case = client.get(f"/api/v1/cases/{case_id}").json()
+    execution = client.get(f"/api/v1/cases/{case_id}/ai-executions", headers=ANALYST_HEADERS).json()[0]
+
+    assert response.status_code == 503
+    assert case["status"] == "analyst_review"
+    assert case["assessment_draft"] is None
+    assert execution["status"] == "failed"
+    assert execution["adapter"] == "tampered-test-provider"
+    assert "unsupported risk scores" in execution["failure_reason"]
+
+
 def test_policy_source_register_contains_approved_synthetic_sources() -> None:
     response = client.get("/api/v1/policy-sources")
 

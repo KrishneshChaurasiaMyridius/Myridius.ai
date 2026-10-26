@@ -1597,8 +1597,10 @@ class CaseStore:
         )
         estimated_input_tokens = max(1, math.ceil((len(retrieval_query) + len(input_context)) / 4))
         started_at = perf_counter()
+        adapter_name = os.getenv("AI_ADAPTER", "deterministic-mock-v1")
         try:
             provider = assessment_draft_provider()
+            adapter_name = provider.adapter_name
             generated = provider.generate(case, retrieval_query, evidence_context, citations)
             expected_scores = case.risk_assessment.factor_scores
             generated_scores = {insight.factor: insight.score for insight in generated.risk_factor_analysis}
@@ -1614,7 +1616,7 @@ class CaseStore:
             failed_execution = AIExecution(
                 execution_id=str(uuid4()),
                 case_id=case_id,
-                adapter=os.getenv("AI_ADAPTER", "deterministic-mock-v1"),
+                adapter=adapter_name,
                 prompt_version="assessment-draft-v2",
                 retrieval_query=retrieval_query,
                 evidence_document_count=len(case.document_evidence),

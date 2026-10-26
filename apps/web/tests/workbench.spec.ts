@@ -25,10 +25,18 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await page.getByLabel("Change title").fill("Synthetic analyst review workflow case");
   await page.getByRole("button", { name: "Create synthetic intake" }).click();
   await page.getByRole("button", { name: "Submit for intake review" }).click();
+  await expect(page.locator(".demo-bar")).toContainText("Case submitted for intake review.");
 
   await page.getByLabel("Acting as").selectOption("analyst");
+  const handoff = page.locator(".inbox li").filter({ hasText: "Synthetic analyst review workflow case" });
+  const acknowledgeButton = handoff.getByRole("button", { name: "Open and acknowledge" }).first();
+  await expect(acknowledgeButton).toBeEnabled();
+  await acknowledgeButton.click();
+  await expect(page.locator(".demo-bar")).toContainText("Workflow handoff acknowledged.");
+  await expect(page.locator("#case-workspace")).toBeInViewport();
   await page.getByRole("button", { name: "Run risk assessment" }).click();
   await expect(page.getByRole("heading", { name: "Analyst recommendation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "How the score was calculated" })).toBeVisible();
   await page.getByRole("button", { name: "Prepare cited draft" }).click();
 
   await expect(page.getByRole("heading", { name: "Risk factor analysis" })).toBeVisible();
