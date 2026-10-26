@@ -10,7 +10,7 @@ The default `assessment-draft` API adapter is deterministic. The optional Anthro
 
 Every draft attempt runs through an explicit provider adapter boundary. Completed and failed attempts both create immutable execution ledger entries containing the adapter, prompt version, retrieval query, evidence and citation counts, estimated input/output tokens, provider-reported token counts when available, duration, completion time, and a failure reason when applicable. The ledger provides traceability and evaluation data; it is not an authority to advance a workflow state.
 
-Policy text is also governed independently of drafting. An administrator may register a policy source and a committee member must explicitly approve it. Non-synthetic policy sources require a source URL. In OIDC mode, synthetic seed entries are excluded from retrieval, and drafting fails closed if no approved, non-synthetic source matches. Retirement removes a source from future retrieval while preserving its audit history.
+Policy text is also governed independently of drafting. An administrator registers immutable source revisions with a source URL, version number, topic, and optional predecessor; a committee member must approve each revision before it is cited. Approval sets the effective date and, for a replacement, atomically retires the predecessor while preserving both records and their audit history. Direct retirement also removes a source from future retrieval. In OIDC mode, synthetic demo entries are excluded from retrieval, and drafting fails closed if no approved, non-synthetic source matches. Synthetic seed text is demonstrative only and is not an authoritative regulatory quotation.
 
 | Stage | System action | Human gate |
 | --- | --- | --- |
@@ -23,6 +23,6 @@ Policy text is also governed independently of drafting. An administrator may reg
 
 If a draft provider is unconfigured, returns unsupported deterministic scores or evidence references, or cannot prepare a draft, the case remains in analyst review and the failure is recorded in both the execution ledger and hash-linked audit trail. It cannot advance automatically. The API records an audit event for every successful material action, and audit events are hash-linked by case.
 
-## Scope note
+## Production corpus gate
 
-The included FATF-labelled and internal-policy citations are synthetic demo artifacts. They are not retrieved in OIDC mode. A production deployment still requires regulatory-owner review, source versioning, and an agreed corpus update and retirement process.
+The included policy citations are synthetic demo artifacts. Their displayed provenance is explicitly marked and they are not retrieved in OIDC mode. No authoritative replacement corpus is bundled: regulatory or internal policy text must be supplied and verified by its owner, then registered and committee-approved before production use. Production enablement still requires an assigned regulatory owner and a documented review, update, approval, and retirement cadence.

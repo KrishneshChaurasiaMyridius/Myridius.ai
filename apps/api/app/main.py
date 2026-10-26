@@ -347,15 +347,18 @@ class AnalystOverrideRequest(BaseModel):
 
 class PolicyCitation(BaseModel):
     source_id: str
+    source_version: int = Field(default=1, ge=1)
     title: str
     excerpt: str
     topic: str
     source_url: HttpUrl | None = None
+    synthetic_data: bool = True
 
 
 class PolicySource(PolicyCitation):
     approved: bool = True
-    synthetic_data: bool = True
+    supersedes_source_id: str | None = None
+    superseded_by_source_id: str | None = None
     effective_from: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
@@ -365,16 +368,22 @@ class PolicySource(PolicyCitation):
 
 class PolicySourceCreateRequest(BaseModel):
     source_id: str = Field(pattern=r"^[A-Z0-9-]{4,80}$")
+    source_version: int = Field(default=1, ge=1)
     title: str = Field(min_length=10, max_length=300)
     excerpt: str = Field(min_length=20, max_length=2_000)
     topic: str = Field(min_length=3, max_length=100)
     source_url: HttpUrl | None = None
     synthetic_data: bool = True
+    supersedes_source_id: str | None = Field(default=None, pattern=r"^[A-Z0-9-]{4,80}$")
 
     @model_validator(mode="after")
     def validate_source_provenance(self) -> "PolicySourceCreateRequest":
         if not self.synthetic_data and not self.source_url:
             raise ValueError("A source URL is required for non-synthetic policy material.")
+        if self.supersedes_source_id is None and self.source_version != 1:
+            raise ValueError("A new policy source must start at version 1.")
+        if self.supersedes_source_id is not None and self.source_version < 2:
+            raise ValueError("A replacement policy source must use version 2 or later.")
         return self
 
 
@@ -859,6 +868,39 @@ class CaseStore:
                         "INSERT INTO policy_sources (source_id, source_json) VALUES (?, ?)",
                         (source.source_id, source.model_dump_json()),
                     )
+            demo_policy_labels = {
+                "FATF-RBA-2014-1": (
+                    "Synthetic Demo: Risk-Based Approach Excerpt",
+                    "Synthetic demonstration text only. It is not an authoritative regulatory quotation or approved policy source.",
+                ),
+                "RAW-SYNTHETIC-POLICY-01": (
+                    "Synthetic Demo: Product Change Standard",
+                    "Synthetic demonstration text only. It is not an authoritative regulatory requirement or approved policy source.",
+                ),
+            }
+            for source_id, (title, excerpt) in demo_policy_labels.items():
+                row = connection.execute(
+                    "SELECT source_json FROM policy_sources WHERE source_id = ?", (source_id,)
+                ).fetchone()
+                if not row:
+                    continue
+                source = PolicySource.model_validate_json(row["source_json"])
+                if source.governance_owner != "System seed" or not source.synthetic_data:
+                    continue
+                if source.title == title and source.excerpt == excerpt and source.source_url is None:
+                    continue
+                relabeled = source.model_copy(update={"title": title, "excerpt": excerpt, "source_url": None})
+                connection.execute(
+                    "UPDATE policy_sources SET source_json = ? WHERE source_id = ?",
+                    (relabeled.model_dump_json(), source_id),
+                )
+                self._append_policy_audit_event(
+                    connection,
+                    source_id,
+                    "policy_demo_source_labeled",
+                    {"synthetic_data": True, "title": title},
+                    Actor(actor_id="system", display_name="System seed", role=Role.ADMINISTRATOR),
+                )
 
     @staticmethod
     def _default_risk_configuration() -> RiskConfiguration:
@@ -877,15 +919,19 @@ class CaseStore:
         return [
             PolicySource(
                 source_id="FATF-RBA-2014-1",
-                title="FATF Guidance: The Risk-Based Approach",
-                excerpt="Risk assessment should identify and understand the risks a firm faces and apply proportionate mitigation.",
+                title="Synthetic Demo: Risk-Based Approach Excerpt",
+                excerpt="Synthetic demonstration text only. It is not an authoritative regulatory quotation or approved policy source.",
                 topic="risk_based_approach",
+                source_url=None,
+                synthetic_data=True,
             ),
             PolicySource(
                 source_id="RAW-SYNTHETIC-POLICY-01",
-                title="Synthetic FCRM Product Change Standard",
-                excerpt="Controls mitigate residual risk but do not eliminate the need for a documented human decision.",
+                title="Synthetic Demo: Product Change Standard",
+                excerpt="Synthetic demonstration text only. It is not an authoritative regulatory requirement or approved policy source.",
                 topic="controls_and_governance",
+                source_url=None,
+                synthetic_data=True,
             ),
         ]
 
@@ -920,6 +966,26 @@ class CaseStore:
             ).fetchone()
             if existing:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source identifier already exists.")
+            predecessor: PolicySource | None = None
+            if request.supersedes_source_id:
+                predecessor_row = connection.execute(
+                    "SELECT source_json FROM policy_sources WHERE source_id = ?", (request.supersedes_source_id,)
+                ).fetchone()
+                if not predecessor_row:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy source to replace was not found.")
+                predecessor = PolicySource.model_validate_json(predecessor_row["source_json"])
+                if predecessor.retired_at or not predecessor.approved:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only an active approved policy source can be replaced.")
+                if request.source_version != predecessor.source_version + 1:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source version must increment the replaced source version by one.")
+                if request.topic != predecessor.topic or request.synthetic_data != predecessor.synthetic_data:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A policy revision must preserve its topic and provenance class.")
+                successor = next(
+                    (item for item in self.policy_sources() if item.supersedes_source_id == predecessor.source_id),
+                    None,
+                )
+                if successor:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A replacement version is already registered for this policy source.")
             connection.execute(
                 "INSERT INTO policy_sources (source_id, source_json) VALUES (?, ?)",
                 (source.source_id, source.model_dump_json()),
@@ -928,7 +994,13 @@ class CaseStore:
                 connection,
                 source.source_id,
                 "policy_source_registered",
-                {"topic": source.topic, "approved": False, "synthetic_data": source.synthetic_data},
+                {
+                    "topic": source.topic,
+                    "approved": False,
+                    "synthetic_data": source.synthetic_data,
+                    "source_version": source.source_version,
+                    "supersedes_source_id": source.supersedes_source_id,
+                },
                 actor,
             )
         return source
@@ -944,14 +1016,49 @@ class CaseStore:
             if source.approved:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source is already approved.")
             approved = source.model_copy(
-                update={"approved": True, "reviewed_by": actor.display_name, "reviewed_at": datetime.now(timezone.utc)}
+                update={
+                    "approved": True,
+                    "reviewed_by": actor.display_name,
+                    "reviewed_at": datetime.now(timezone.utc),
+                    "effective_from": datetime.now(timezone.utc),
+                }
             )
+            predecessor: PolicySource | None = None
+            if source.supersedes_source_id:
+                predecessor_row = connection.execute(
+                    "SELECT source_json FROM policy_sources WHERE source_id = ?", (source.supersedes_source_id,)
+                ).fetchone()
+                if not predecessor_row:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replaced policy source is unavailable.")
+                predecessor = PolicySource.model_validate_json(predecessor_row["source_json"])
+                if predecessor.retired_at or not predecessor.approved:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replaced policy source is no longer active.")
+                if source.source_version != predecessor.source_version + 1:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Policy source revision is no longer current.")
+                superseded = predecessor.model_copy(
+                    update={"approved": False, "retired_at": datetime.now(timezone.utc), "superseded_by_source_id": source.source_id}
+                )
+                connection.execute(
+                    "UPDATE policy_sources SET source_json = ? WHERE source_id = ?",
+                    (superseded.model_dump_json(), predecessor.source_id),
+                )
+                self._append_policy_audit_event(
+                    connection,
+                    predecessor.source_id,
+                    "policy_source_superseded",
+                    {"superseded_by_source_id": source.source_id, "source_version": predecessor.source_version},
+                    actor,
+                )
             connection.execute(
                 "UPDATE policy_sources SET source_json = ? WHERE source_id = ?",
                 (approved.model_dump_json(), source_id),
             )
             self._append_policy_audit_event(
-                connection, source_id, "policy_source_approved", {"topic": approved.topic}, actor
+                connection,
+                source_id,
+                "policy_source_approved",
+                {"topic": approved.topic, "source_version": approved.source_version},
+                actor,
             )
         return approved
 
@@ -1019,7 +1126,7 @@ class CaseStore:
 
     def retrieve_policy_sources(self, topics: set[str]) -> list[PolicyCitation]:
         citations = [
-            PolicyCitation(**source.model_dump(exclude={"approved", "synthetic_data"}))
+            PolicyCitation(**source.model_dump(exclude={"approved"}))
             for source in self.policy_sources()
             if source.approved
             and source.retired_at is None

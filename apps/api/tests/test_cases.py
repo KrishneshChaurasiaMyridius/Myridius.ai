@@ -689,6 +689,40 @@ def test_policy_source_register_contains_approved_synthetic_sources() -> None:
         "RAW-SYNTHETIC-POLICY-01",
     }
     assert all(source["approved"] and source["synthetic_data"] for source in response.json())
+    assert all("Synthetic Demo:" in source["title"] for source in response.json())
+    assert all("not an authoritative" in source["excerpt"] for source in response.json())
+
+
+def test_legacy_seed_policy_is_relabelled_once_with_audit_history(tmp_path) -> None:
+    database_path = str(tmp_path / "legacy-policy.db")
+    legacy_store = main.CaseStore(database_path=database_path)
+    with legacy_store._connect() as connection:
+        row = connection.execute(
+            "SELECT source_json FROM policy_sources WHERE source_id = ?", ("FATF-RBA-2014-1",)
+        ).fetchone()
+        legacy_source = main.PolicySource.model_validate_json(row["source_json"]).model_copy(
+            update={
+                "title": "FATF Guidance: The Risk-Based Approach",
+                "excerpt": "Risk assessment should identify and understand the risks a firm faces and apply proportionate mitigation.",
+            }
+        )
+        connection.execute(
+            "UPDATE policy_sources SET source_json = ? WHERE source_id = ?",
+            (legacy_source.model_dump_json(), legacy_source.source_id),
+        )
+
+    upgraded_store = main.CaseStore(database_path=database_path)
+    source = next(item for item in upgraded_store.policy_sources() if item.source_id == "FATF-RBA-2014-1")
+    assert source.title == "Synthetic Demo: Risk-Based Approach Excerpt"
+    assert "not an authoritative" in source.excerpt
+    assert source.synthetic_data is True
+    assert source.source_url is None
+    assert [event.action for event in upgraded_store.policy_audit_events(source.source_id)] == [
+        "policy_demo_source_labeled"
+    ]
+
+    main.CaseStore(database_path=database_path)
+    assert len(upgraded_store.policy_audit_events(source.source_id)) == 1
 
 
 def test_administrator_can_govern_policy_source_lifecycle() -> None:
@@ -718,6 +752,54 @@ def test_administrator_can_govern_policy_source_lifecycle() -> None:
         "policy_source_approved",
         "policy_source_retired",
     ]
+
+
+def test_policy_revision_replaces_approved_source_only_after_committee_approval(monkeypatch) -> None:
+    original = client.post(
+        "/api/v1/policy-sources",
+        headers=ADMINISTRATOR_HEADERS,
+        json={
+            "source_id": "GOV-POLICY-001",
+            "source_version": 1,
+            "title": "Governed Risk-Based Approach",
+            "excerpt": "An approved source excerpt for version one of the governed policy corpus.",
+            "topic": "risk_based_approach",
+            "source_url": "https://policy.example.test/risk/v1",
+            "synthetic_data": False,
+        },
+    )
+    assert original.status_code == 201
+    assert client.post("/api/v1/policy-sources/GOV-POLICY-001/approve", headers=COMMITTEE_HEADERS).status_code == 200
+
+    revision = client.post(
+        "/api/v1/policy-sources",
+        headers=ADMINISTRATOR_HEADERS,
+        json={
+            "source_id": "GOV-POLICY-002",
+            "source_version": 2,
+            "supersedes_source_id": "GOV-POLICY-001",
+            "title": "Governed Risk-Based Approach Revision",
+            "excerpt": "An updated approved source excerpt for version two of the governed policy corpus.",
+            "topic": "risk_based_approach",
+            "source_url": "https://policy.example.test/risk/v2",
+            "synthetic_data": False,
+        },
+    )
+    assert revision.status_code == 201
+    assert revision.json()["approved"] is False
+    assert client.get("/api/v1/policy-sources").json()[0]["approved"] is True
+
+    approved_revision = client.post("/api/v1/policy-sources/GOV-POLICY-002/approve", headers=COMMITTEE_HEADERS)
+    assert approved_revision.status_code == 200
+    assert approved_revision.json()["source_version"] == 2
+    assert approved_revision.json()["supersedes_source_id"] == "GOV-POLICY-001"
+    sources = {source["source_id"]: source for source in client.get("/api/v1/policy-sources").json()}
+    assert sources["GOV-POLICY-001"]["retired_at"] is not None
+    assert sources["GOV-POLICY-001"]["superseded_by_source_id"] == "GOV-POLICY-002"
+    assert sources["GOV-POLICY-002"]["approved"] is True
+    monkeypatch.setenv("AUTH_MODE", "oidc")
+    citations = case_store.retrieve_policy_sources({"risk_based_approach"})
+    assert [(citation.source_id, citation.source_version) for citation in citations] == [("GOV-POLICY-002", 2)]
 
 
 def test_operations_metrics_expose_workflow_and_audit_health() -> None:

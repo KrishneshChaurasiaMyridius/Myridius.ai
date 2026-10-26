@@ -12,6 +12,7 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
 
   await expect(page.getByRole("heading", { name: "Risk Assessment Workbench" })).toBeVisible();
   await expect(page.getByText("SYNTHETIC DEMO", { exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "product owner workflow navigation" }).getByRole("link", { name: "New intake" })).toBeVisible();
   await page.getByLabel("Change title").fill("Synthetic browser workflow case");
   await page.getByRole("button", { name: "Create synthetic intake" }).click();
 
@@ -28,6 +29,8 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await expect(page.locator(".demo-bar")).toContainText("Case submitted for intake review.");
 
   await page.getByLabel("Acting as").selectOption("analyst");
+  await expect(page.getByRole("navigation", { name: "analyst workflow navigation" }).getByRole("link", { name: "Active review" })).toBeVisible();
+  await expect(page.getByLabel("Change title")).toHaveCount(0);
   const handoff = page.locator(".inbox li").filter({ hasText: "Synthetic analyst review workflow case" });
   const acknowledgeButton = handoff.getByRole("button", { name: "Open and acknowledge" }).first();
   await expect(acknowledgeButton).toBeEnabled();
@@ -43,4 +46,48 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await expect(page.getByRole("heading", { name: "Control observations" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Evidence gaps" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Approved source excerpts" })).toBeVisible();
+  await expect(page.getByText("SYNTHETIC DEMO ONLY · NOT AUTHORITATIVE")).toBeVisible();
+});
+
+test("administrator and committee govern source-linked policy revisions", async ({ page }) => {
+  const sourceRun = Date.now().toString();
+  const firstSourceId = `HACKATHON-${sourceRun}-01`;
+  const secondSourceId = `HACKATHON-${sourceRun}-02`;
+  await page.goto("/");
+  await page.getByLabel("Acting as").selectOption("administrator");
+  const navigation = page.getByRole("navigation", { name: "administrator workflow navigation" });
+  await navigation.getByRole("link", { name: "Policy sources" }).click();
+  await expect(page.getByText("Synthetic policy entries are demo-only", { exact: false })).toBeVisible();
+
+  await page.getByLabel("Source ID").fill(firstSourceId);
+  await page.getByLabel("Title", { exact: true }).fill("Hackathon Policy Version One");
+  await page.getByLabel("Source URL").fill("https://policy.example.test/hackathon-v1");
+  await page.getByLabel("Policy excerpt").fill("Synthetic E2E policy excerpt used only to verify version approval and retirement handling.");
+  await page.getByRole("button", { name: "Register source for review" }).click();
+  const firstVersion = page.locator(".policy-list li").filter({ hasText: new RegExp(`${firstSourceId} · v1 ·`) });
+  await expect(firstVersion).toContainText("v1");
+  await expect(firstVersion).toContainText("pending review");
+
+  await page.getByLabel("Acting as").selectOption("committee");
+  const approveFirstVersion = firstVersion.getByRole("button", { name: "Approve" });
+  await expect(approveFirstVersion).toBeEnabled();
+  await approveFirstVersion.click();
+  await expect(firstVersion).toContainText("approved");
+
+  await page.getByLabel("Acting as").selectOption("administrator");
+  await page.getByLabel("Source ID").fill(secondSourceId);
+  await page.getByLabel("Revision of").selectOption(firstSourceId);
+  await expect(page.getByRole("spinbutton", { name: "Version" })).toHaveValue("2");
+  await page.getByLabel("Title", { exact: true }).fill("Hackathon Policy Version Two");
+  await page.getByLabel("Source URL").fill("https://policy.example.test/hackathon-v2");
+  await page.getByLabel("Policy excerpt").fill("Updated synthetic E2E policy excerpt for testing approval-gated version replacement.");
+  await page.getByRole("button", { name: "Register source for review" }).click();
+  const secondVersion = page.locator(".policy-list li").filter({ hasText: new RegExp(`${secondSourceId} · v2 ·`) });
+  await expect(secondVersion).toContainText("v2");
+  await expect(secondVersion).toContainText("pending review");
+
+  await page.getByLabel("Acting as").selectOption("committee");
+  await secondVersion.getByRole("button", { name: "Approve" }).click();
+  await expect(secondVersion).toContainText("approved");
+  await expect(firstVersion).toContainText(`superseded by ${secondSourceId}`);
 });
