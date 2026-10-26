@@ -1143,7 +1143,12 @@ class CaseStore:
         if not citations:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="No approved policy source matched the assessment; analyst escalation is required.",
+                detail=(
+                    "No active, committee-approved policy source matched this assessment. "
+                    "An administrator must register an externally sourced policy excerpt under "
+                    "risk_based_approach or controls_and_governance, then a committee member must approve it. "
+                    "Retry the assessment draft after approval."
+                ),
             )
         return citations
 

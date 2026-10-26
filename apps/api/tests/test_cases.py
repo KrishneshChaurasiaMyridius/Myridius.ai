@@ -107,6 +107,8 @@ def test_oidc_policy_retrieval_excludes_synthetic_sources_and_requires_provenanc
         case_store.retrieve_policy_sources({"risk_based_approach", "controls_and_governance"})
     except main.HTTPException as error:
         assert error.status_code == 409
+        assert "administrator must register an externally sourced policy excerpt" in error.detail
+        assert "committee member must approve it" in error.detail
     else:
         raise AssertionError("OIDC retrieval must not use synthetic seed policies.")
 
