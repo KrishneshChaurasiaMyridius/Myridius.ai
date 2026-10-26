@@ -6,7 +6,7 @@ Run from the repository root:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 import sys
@@ -15,6 +15,8 @@ from tempfile import gettempdir
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "api"))
 os.environ["RAW_DATABASE_PATH"] = str(Path(gettempdir()) / "myridius-evaluation.db")
+os.environ["AUTH_MODE"] = "demo"
+os.environ.setdefault("AI_ADAPTER", "deterministic-mock-v1")
 
 from fastapi.testclient import TestClient
 from app.main import app, case_store
@@ -27,21 +29,7 @@ AUDITOR_HEADERS = {"X-Actor-Id": "auditor"}
 
 
 def intake() -> dict[str, object]:
-    return {
-        "title": "Synthetic evaluation cross-border payments feature",
-        "change_type": "product_feature",
-        "business_rationale": "Evaluate deterministic governance behavior with synthetic cross-border payment data.",
-        "business_owner": "Taylor Product Owner",
-        "target_launch_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
-        "jurisdictions": ["GB", "US"],
-        "customer_exposure": "moderate",
-        "delivery_channels": ["web"],
-        "payment_characteristics": ["cross-border"],
-        "third_parties": ["Synthetic payment processor"],
-        "proposed_controls": ["Sanctions screening", "Transaction monitoring"],
-        "attachment_urls": ["https://example.test/synthetic-evaluation-brief.pdf"],
-        "is_synthetic": True,
-    }
+    return json.loads((ROOT / "evals" / "sample_intake.json").read_text(encoding="utf-8"))
 
 
 def run() -> dict[str, object]:
@@ -49,6 +37,18 @@ def run() -> dict[str, object]:
     client = TestClient(app)
     created = client.post("/api/v1/cases", json=intake(), headers=PRODUCT_OWNER_HEADERS)
     case_id = created.json()["case_id"]
+    uploaded_evidence = client.post(
+        f"/api/v1/cases/{case_id}/document-evidence/upload",
+        data={"title": "Synthetic control test report", "document_type": "control_test", "is_synthetic": "true"},
+        files={
+            "file": (
+                "sample_control_evidence.md",
+                (ROOT / "evals" / "sample_control_evidence.md").read_bytes(),
+                "text/markdown",
+            )
+        },
+        headers=PRODUCT_OWNER_HEADERS,
+    )
     submitted = client.post(f"/api/v1/cases/{case_id}/submit", headers=PRODUCT_OWNER_HEADERS)
     assessed = client.post(
         f"/api/v1/cases/{case_id}/risk-assessment",
@@ -77,23 +77,30 @@ def run() -> dict[str, object]:
             "conditions": [],
         },
     )
-    evidence = client.get(f"/api/v1/cases/{case_id}/evidence-package", headers=AUDITOR_HEADERS)
+    evidence_package = client.get(f"/api/v1/cases/{case_id}/evidence-package", headers=AUDITOR_HEADERS)
     unauthorized = client.post(f"/api/v1/cases/{case_id}/risk-assessment", headers=PRODUCT_OWNER_HEADERS, json={})
 
-    package = evidence.json()
+    package = evidence_package.json()
     result = {
         "case_id": case_id,
+        "sample_record": "evals/sample_intake.json",
+        "sample_evidence": "evals/sample_control_evidence.md",
+        "draft_provider": drafted.json().get("assessment_draft", {}).get("generator"),
+        "evidence_document_count": len(drafted.json().get("document_evidence", [])),
         "workflow_status_codes": [
             created.status_code,
+            uploaded_evidence.status_code,
             submitted.status_code,
             assessed.status_code,
             drafted.status_code,
             sent_to_committee.status_code,
             decided.status_code,
-            evidence.status_code,
+            evidence_package.status_code,
         ],
         "residual_risk_floor_respected": assessed.json()["residual_risk"] >= 1,
         "citation_count": len(drafted.json()["assessment_draft"]["citations"]),
+        "discrepancy_section_present": "discrepancies" in drafted.json()["assessment_draft"],
+        "research_steps_present": "research_steps" in drafted.json()["assessment_draft"],
         "ai_execution_recorded": ai_executions.status_code == 200 and len(ai_executions.json()) == 1,
         "estimated_ai_tokens": sum(
             ai_executions.json()[0][field] for field in ("estimated_input_tokens", "estimated_output_tokens")
@@ -103,9 +110,12 @@ def run() -> dict[str, object]:
         "unauthorized_transition_status": unauthorized.status_code,
     }
     result["passed"] = (
-        result["workflow_status_codes"] == [201, 200, 200, 200, 200, 200, 200]
+        result["workflow_status_codes"] == [201, 201, 200, 200, 200, 200, 200, 200]
         and result["residual_risk_floor_respected"]
         and result["citation_count"] >= 1
+        and result["evidence_document_count"] == 1
+        and result["discrepancy_section_present"]
+        and result["research_steps_present"]
         and result["ai_execution_recorded"]
         and result["estimated_ai_tokens"] > 0
         and result["human_only_decision_authority"]

@@ -61,10 +61,13 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
 
   await expect(page.getByRole("heading", { name: "Risk factor analysis" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Control observations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Intake and evidence discrepancies" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Potential risk signals to verify" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Suggested analyst research steps" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Evidence gaps" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Approved source excerpts" })).toBeVisible();
   await expect(page.getByText("DEMO SAMPLE · NOT AUTHORITATIVE").first()).toBeVisible();
-  await expect(page.locator(".draft-purpose")).toContainText("does not decide or approve the case");
+  await expect(page.locator(".draft-purpose")).toContainText("cannot decide or approve the case");
   await page.getByRole("button", { name: "Send to committee" }).click();
   await expect(page.locator(".toast")).toContainText("Case sent to committee.");
   await page.getByLabel("Acting as").selectOption("committee");

@@ -1,0 +1,15 @@
+{
+  "title": "Synthetic cross-border payments feature",
+  "change_type": "product_feature",
+  "business_rationale": "Launch a synthetic cross-border payment feature for small businesses with faster settlement across supported markets.",
+  "business_owner": "Taylor Product Owner",
+  "target_launch_date": "2027-06-30T00:00:00+00:00",
+  "jurisdictions": ["GB", "US"],
+  "customer_exposure": "moderate",
+  "delivery_channels": ["web", "api"],
+  "payment_characteristics": ["cross-border", "high-value transfers"],
+  "third_parties": ["Synthetic Payment Processor Ltd"],
+  "proposed_controls": ["Sanctions screening", "Transaction monitoring", "Customer due diligence"],
+  "attachment_urls": ["https://example.test/synthetic-cross-border-change-brief"],
+  "is_synthetic": true
+}

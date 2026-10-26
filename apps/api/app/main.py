@@ -190,7 +190,12 @@ def current_actor(
     if not display_name:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="OIDC identity requires a human-readable claim: verified email, preferred username, display name, or name. Opaque Auth0 subject IDs cannot be used as display names.",
+            detail=(
+                "The API access token has no usable display name. In Auth0, add the "
+                "https://myridius.ai/claims/display_name custom claim in a deployed Post Login Action, "
+                "attach that Action to the Login flow, then sign out and sign in again. Use a human-readable "
+                "name or verified email; opaque Auth0 subject IDs cannot be used as display names."
+            ),
         )
     return Actor(actor_id=actor_id, display_name=display_name, role=role)
 
@@ -416,6 +421,9 @@ class AssessmentDraft(BaseModel):
     summary: str
     risk_factor_analysis: list["RiskFactorInsight"] = Field(default_factory=list)
     control_observations: list[str] = Field(default_factory=list)
+    discrepancies: list[str] = Field(default_factory=list)
+    risk_signals: list[str] = Field(default_factory=list)
+    research_steps: list[str] = Field(default_factory=list)
     evidence_gaps: list[str] = Field(default_factory=list)
     actual_input_tokens: int | None = Field(default=None, ge=0)
     actual_output_tokens: int | None = Field(default=None, ge=0)
@@ -426,7 +434,7 @@ class AssessmentDraft(BaseModel):
     retrieval_query: str = ""
     prepared_at: datetime
     generator: str = "deterministic-mock-v1"
-    prompt_version: str = "assessment-draft-v2"
+    prompt_version: str = "assessment-draft-v3"
     execution_id: str
     decision_authority: Literal["human_only"] = "human_only"
 
@@ -452,6 +460,7 @@ class AIExecution(BaseModel):
 class RiskFactorInsight(BaseModel):
     factor: str
     score: int = Field(ge=1, le=5)
+    ai_suggested_score: int | None = Field(default=None, ge=1, le=5)
     rationale: str
     evidence_refs: list[str] = Field(default_factory=list)
 
@@ -460,6 +469,9 @@ class GeneratedAssessment(BaseModel):
     summary: str
     risk_factor_analysis: list[RiskFactorInsight] = Field(default_factory=list)
     control_observations: list[str] = Field(default_factory=list)
+    discrepancies: list[str] = Field(default_factory=list)
+    risk_signals: list[str] = Field(default_factory=list)
+    research_steps: list[str] = Field(default_factory=list)
     evidence_gaps: list[str] = Field(default_factory=list)
     analyst_questions: list[str]
     actual_input_tokens: int | None = Field(default=None, ge=0)
@@ -507,6 +519,10 @@ class DeterministicAssessmentProvider:
             ],
             control_observations=[
                 f"Proposed control: {control}" for control in case.intake.proposed_controls
+            ],
+            research_steps=[
+                "Compare the product owner's jurisdiction and channel claims with the supporting source documents.",
+                "Request operating-effectiveness testing for each material proposed control before recommending committee review.",
             ],
             evidence_gaps=[
                 "No evidence documents are attached." if not case.document_evidence else "Confirm each control observation against the attached evidence."
@@ -558,12 +574,16 @@ class AnthropicAssessmentProvider:
                     "risk_factor_analysis": [
                         {
                             "factor": "one supplied risk-factor name",
-                            "score": "integer score supplied by deterministic assessment",
+                            "score": "integer score supplied by deterministic assessment; preserve exactly",
+                            "ai_suggested_score": "your separate advisory score from 1 to 5 based only on supplied facts; do not change or replace score",
                             "rationale": "evidence-grounded analyst explanation; do not change the score",
                             "evidence_refs": ["document_id values from supplied evidence only"],
                         }
                     ],
                     "control_observations": ["observations about proposed controls, with no claim of effectiveness absent evidence"],
+                    "discrepancies": ["specific conflicts between intake claims and supplied evidence; include the compared facts, or return an empty list"],
+                    "risk_signals": ["potential control weaknesses, anomalous patterns, or malpractice indicators that require human verification; never assert intent or wrongdoing as fact"],
+                    "research_steps": ["prioritized, practical checks the analyst can perform, including what evidence to request and what claim it tests"],
                     "evidence_gaps": ["specific missing, conflicting, or unverified evidence"],
                     "analyst_questions": ["prioritized questions that help resolve material gaps"],
                 },
@@ -573,6 +593,8 @@ class AnthropicAssessmentProvider:
                     "Do not invent policy requirements, evidence, facts, or citations.",
                     "Return JSON only, with exactly the keys shown in output_contract.",
                     "Return one risk_factor_analysis item per supplied factor and preserve its deterministic score.",
+                    "Compare stated jurisdictions, controls, customer exposure, payment characteristics, channels, and third parties against evidence; describe only verifiable discrepancies.",
+                    "Treat risk signals as investigative leads, not conclusions or allegations of malpractice.",
                     "Do not state or imply that a committee decision has been made.",
                 ],
             }
@@ -1403,8 +1425,19 @@ class CaseStore:
 
     def list(self) -> list[CaseSummary]:
         with self._connect() as connection:
-            order_by = "case_id DESC" if self.is_postgres else "rowid DESC"
-            rows = connection.execute(f"SELECT * FROM cases ORDER BY {order_by}").fetchall()
+            rows = connection.execute(
+                """
+                SELECT cases.*
+                FROM cases
+                LEFT JOIN (
+                    SELECT case_id, MIN(occurred_at) AS created_at
+                    FROM audit_events
+                    WHERE action = 'case_created'
+                    GROUP BY case_id
+                ) AS creation_events ON creation_events.case_id = cases.case_id
+                ORDER BY creation_events.created_at DESC NULLS LAST, cases.case_id DESC
+                """
+            ).fetchall()
         return [CaseSummary.model_validate(dict(row)) for row in rows]
 
     def create(self, intake: IntakeRequest) -> CaseDetail:
@@ -1740,12 +1773,16 @@ class CaseStore:
             }
             if generated_scores != expected_scores or not referenced_evidence_ids.issubset(evidence_ids):
                 raise RuntimeError("Assessment provider returned unsupported risk scores or evidence references.")
+            if adapter_name == "anthropic-claude" and any(
+                insight.ai_suggested_score is None for insight in generated.risk_factor_analysis
+            ):
+                raise RuntimeError("Anthropic assessment omitted one or more advisory factor ratings.")
         except (ProviderConfigurationError, RuntimeError) as error:
             failed_execution = AIExecution(
                 execution_id=str(uuid4()),
                 case_id=case_id,
                 adapter=adapter_name,
-                prompt_version="assessment-draft-v2",
+                prompt_version="assessment-draft-v3",
                 retrieval_query=retrieval_query,
                 evidence_document_count=len(case.document_evidence),
                 citation_count=len(citations),
@@ -1784,7 +1821,7 @@ class CaseStore:
             execution_id=str(uuid4()),
             case_id=case_id,
             adapter=provider.adapter_name,
-            prompt_version="assessment-draft-v2",
+            prompt_version="assessment-draft-v3",
             retrieval_query=retrieval_query,
             evidence_document_count=len(case.document_evidence),
             citation_count=len(citations),
@@ -1799,6 +1836,9 @@ class CaseStore:
             summary=generated.summary,
             risk_factor_analysis=generated.risk_factor_analysis,
             control_observations=generated.control_observations,
+            discrepancies=generated.discrepancies,
+            risk_signals=generated.risk_signals,
+            research_steps=generated.research_steps,
             evidence_gaps=generated.evidence_gaps,
             actual_input_tokens=generated.actual_input_tokens,
             actual_output_tokens=generated.actual_output_tokens,

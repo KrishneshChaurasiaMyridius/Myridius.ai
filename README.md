@@ -33,7 +33,59 @@ For an internet-facing production deployment, use HTTPS, private managed Postgre
 
 `NEXT_PUBLIC_AUTH_MODE=oidc` enables Auth0 authorization-code login with PKCE. Set `NEXT_PUBLIC_AUTH0_DOMAIN`, `NEXT_PUBLIC_AUTH0_CLIENT_ID`, `NEXT_PUBLIC_AUTH0_AUDIENCE` (the Auth0 API Identifier), and `NEXT_PUBLIC_API_URL` in Vercel. The browser sends the Auth0 API access token as a bearer token for every actor-protected request, including uploads and evidence export. The frontend fails closed when OIDC is selected but required public configuration is missing; it does not expose the demo actor selector.
 
-Configure the Auth0 Post Login Action to put `https://myridius.ai/claims/fcrm_role` and `https://myridius.ai/claims/display_name` in both the access token and ID token. The role claim must contain exactly one of `product_owner`, `analyst`, `committee_member`, `auditor`, or `administrator`; the display-name claim should use the user’s assigned workbench name. To display the user’s email, also add `https://myridius.ai/claims/email` and `https://myridius.ai/claims/email_verified` to the access token; the API uses the email only when the verified claim is `true`, then falls back to username or display name. The workbench requests `/api/v1/identity/me` with the access token and uses that API-validated profile as the canonical role and identity for the signed-in label and intake attribution. On Render set `AUTH_MODE=oidc`, `OIDC_ISSUER` to the Auth0 issuer URL, `OIDC_AUDIENCE` to the same API Identifier, `OIDC_JWKS_URL` to `https://<auth0-domain>/.well-known/jwks.json`, and `OIDC_ROLE_CLAIM=https://myridius.ai/claims/fcrm_role`. Also set `CORS_ALLOWED_ORIGINS` to the exact Vercel origin without a trailing slash. Never put an Auth0 client secret in the browser or repository.
+The API validates the **access token**, so the claims must be added to that token (adding them only to the ID token is not sufficient). Assign each user exactly one of the allowed Auth0 application roles. In Auth0, create a **Post Login** Action with this logic, then **Deploy** it and attach it to the **Login** flow:
+
+```javascript
+exports.onExecutePostLogin = async (event, api) => {
+	const namespace = "https://myridius.ai/claims";
+	const allowedRoles = [
+		"product_owner",
+		"analyst",
+		"committee_member",
+		"auditor",
+		"administrator",
+	];
+
+	const assignedRoles = (event.authorization?.roles ?? [])
+		.filter((role) => allowedRoles.includes(role));
+
+	if (assignedRoles.length !== 1) {
+		api.access.deny("Assign exactly one application role before signing in.");
+		return;
+	}
+
+	const user = event.user;
+	const verifiedEmail = user.email_verified === true ? user.email : undefined;
+	const candidates = [user.name, user.nickname, verifiedEmail];
+	const displayName = candidates.find((value) =>
+		typeof value === "string" &&
+		value.trim() !== "" &&
+		value.trim() !== user.user_id &&
+		!value.trim().startsWith("auth0|")
+	)?.trim();
+
+	if (!displayName) {
+		api.access.deny("Add a human-readable name or verified email to your Auth0 profile before signing in.");
+		return;
+	}
+
+	const roleClaim = `${namespace}/fcrm_role`;
+	const displayNameClaim = `${namespace}/display_name`;
+	const role = assignedRoles[0];
+
+	api.accessToken.setCustomClaim(roleClaim, role);
+	api.accessToken.setCustomClaim(displayNameClaim, displayName);
+	api.idToken.setCustomClaim(roleClaim, role);
+	api.idToken.setCustomClaim(displayNameClaim, displayName);
+
+	if (user.email) {
+		api.accessToken.setCustomClaim(`${namespace}/email`, user.email);
+		api.accessToken.setCustomClaim(`${namespace}/email_verified`, user.email_verified === true);
+	}
+};
+```
+
+Then check that `NEXT_PUBLIC_AUTH0_AUDIENCE` in Vercel and `OIDC_AUDIENCE` on the API are the same Auth0 API Identifier, and that the API uses the matching issuer and signing keys. Once the Action is deployed and attached, sign out of the workbench and sign in again to obtain a fresh access token. If identity still fails, verify that the token returned for the configured audience contains both namespaced claims; do not paste live tokens into tickets or public JWT inspection sites. The workbench calls `/api/v1/identity/me` and uses that API-validated profile as the signed-in identity and intake attribution. On Render set `AUTH_MODE=oidc`, `OIDC_ISSUER` to the Auth0 issuer URL, `OIDC_AUDIENCE` to the same API Identifier, `OIDC_JWKS_URL` to `https://<auth0-domain>/.well-known/jwks.json`, and `OIDC_ROLE_CLAIM=https://myridius.ai/claims/fcrm_role`. Also set `CORS_ALLOWED_ORIGINS` to the exact Vercel origin without a trailing slash. Never put an Auth0 client secret in the browser or repository.
 
 For the current deployment, register `https://myridius-ai-ye2b-one.vercel.app` and `http://localhost:3000` as Auth0 Allowed Callback URLs, Allowed Logout URLs, and Allowed Web Origins. Deploy and verify the OIDC-enabled frontend before switching the Render API from demo mode; the API will reject demo headers once OIDC mode is active.
 
@@ -41,11 +93,11 @@ For the current deployment, register `https://myridius-ai-ye2b-one.vercel.app` a
 
 GitHub Actions runs SQLite and PostgreSQL Alembic migration smoke checks, PostgreSQL `CaseStore` initialization, the API workflow test suite, Python dependency audit, web type check, high-severity npm audit, and a Chromium Playwright smoke test that creates a synthetic case through the live workbench on pushes and pull requests.
 
-Run the repeatable synthetic end-to-end governance evaluation with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It verifies deterministic workflow progression, human-only draft authority, citation availability, persisted AI execution telemetry with estimated token usage, residual-risk floor enforcement, audit-chain integrity and a denied unauthorized transition.
+Run the repeatable sample case from the repository root with `C:\Python313\python.exe evals\run_workflow_evaluation.py`. It creates the intake in [evals/sample_intake.json](evals/sample_intake.json), uploads [evals/sample_control_evidence.md](evals/sample_control_evidence.md), scores the case, invokes **Prepare cited draft**, and verifies that the draft contains approved demo citations. The evaluation uses demo identity and the deterministic mock provider by default, so it works without an Anthropic key. To exercise Claude instead, set `AI_ADAPTER=anthropic-claude` and `ANTHROPIC_API_KEY` in the environment before running it. The run also checks human-only decision authority, AI execution telemetry, residual-risk floor enforcement, audit-chain integrity and an unauthorized transition.
 
 ## AI adapter boundary
 
-`AI_ADAPTER=deterministic-mock-v1` remains the reproducible local adapter. To enable Claude, set `AI_ADAPTER=anthropic-claude` and provide `ANTHROPIC_API_KEY` through the deployment secret manager; `ANTHROPIC_MODEL` defaults to `claude-opus-4-8`, `ANTHROPIC_MAX_TOKENS` defaults to 2048 (bounded to 256-4096), and `ANTHROPIC_TIMEOUT_SECONDS` is bounded to 1-120. The v2 assessment prompt supplies the complete intake, deterministic factor scores and configuration, bounded evidence excerpts, and approved policy excerpts. Claude returns a structured analyst brief with factor explanations, control observations, evidence gaps, and prioritized questions. The API preserves deterministic scores, validates referenced evidence IDs, owns the citation list, and never delegates a decision or workflow transition. Actual provider token usage is recorded when returned and aggregated separately from estimates in operations metrics. Unknown, malformed, unavailable, or unsupported model output fails closed with the case remaining in analyst review.
+`AI_ADAPTER=deterministic-mock-v1` remains the reproducible local adapter. To enable Claude, set `AI_ADAPTER=anthropic-claude` and provide `ANTHROPIC_API_KEY` through the deployment secret manager; `ANTHROPIC_MODEL` defaults to `claude-opus-4-8`, `ANTHROPIC_MAX_TOKENS` defaults to 2048 (bounded to 256-4096), and `ANTHROPIC_TIMEOUT_SECONDS` is bounded to 1-120. In the workbench, after the product owner submits an intake and an analyst runs the deterministic assessment, **Prepare cited draft** invokes the configured provider. With Claude enabled, the v3 prompt sends the intake, deterministic scores and scoring configuration, up to 24,000 characters of uploaded/recorded evidence context, and eligible approved policy excerpts. Claude returns factor explanations and separate advisory factor ratings, possible intake/evidence discrepancies, risk signals to verify, control observations, prioritized analyst research steps, evidence gaps, and analyst questions. Uploaded text is treated as untrusted evidence, and possible malpractice indicators are framed only as leads for human verification, never findings of intent or wrongdoing. The API preserves the deterministic scores, validates referenced evidence IDs, owns the citation list, and never delegates a decision or workflow transition. Actual provider token usage is recorded when returned and aggregated separately from estimates in operations metrics. Unknown, malformed, unavailable, or unsupported model output fails closed with the case remaining in analyst review.
 
 Seed policy entries are synthetic demo artifacts, explicitly labeled as non-authoritative, and excluded from OIDC-mode assessment retrieval. No authoritative production corpus is bundled. Before enabling production assessments, an authorized policy owner must provide and verify each source excerpt; an administrator registers source-linked version 1 records or successor revisions, and a committee member approves each revision. Approval activates the new revision and retires its approved predecessor while preserving audit history. Drafting fails closed if no eligible approved sources match. Production still requires an assigned regulatory owner and an agreed source review, update, approval, and retirement cadence.
 
