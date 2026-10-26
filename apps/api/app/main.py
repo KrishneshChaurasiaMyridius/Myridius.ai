@@ -18,7 +18,7 @@ import jwt
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, HttpUrl, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, Field, HttpUrl, ValidationError, ValidationInfo, field_validator, model_validator
 
 
 LOGGER = logging.getLogger("risk_assessment_api")
@@ -557,8 +557,28 @@ def anthropic_failure_reason(error: Exception) -> str:
         return "Anthropic request timed out; check service connectivity and retry."
     if error_type == "APIConnectionError":
         return "Could not connect to Anthropic; check outbound network access and retry."
-    if error_type in {"ValidationError", "JSONDecodeError"}:
-        return "Anthropic returned output that did not match the required structured format."
+    if isinstance(error, ValidationError):
+        validation_errors = error.errors(include_input=False)
+        if any(issue.get("type") == "json_invalid" for issue in validation_errors):
+            return "Anthropic response was not valid JSON; it may be truncated at the output limit or wrapped in extra text."
+        missing_fields = [
+            ".".join(str(part) for part in issue["loc"])
+            for issue in validation_errors
+            if issue.get("type") == "missing"
+        ]
+        if missing_fields:
+            return f"Anthropic response omitted required field(s): {', '.join(missing_fields[:5])}."
+        invalid_fields = []
+        for issue in validation_errors[:5]:
+            path = ".".join(
+                str(part)
+                for part in issue["loc"]
+                if type(part) is int or (isinstance(part, str) and part.isidentifier())
+            )
+            invalid_fields.append(f"{path or 'response'} ({issue.get('type', 'invalid')})")
+        return f"Anthropic response failed schema validation: {', '.join(invalid_fields)}."
+    if error_type == "JSONDecodeError":
+        return "Anthropic response was not valid JSON; it may be truncated at the output limit or wrapped in extra text."
     return "Anthropic request failed; inspect API service logs for the exception class."
 
 

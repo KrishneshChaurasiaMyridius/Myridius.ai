@@ -721,6 +721,20 @@ def test_anthropic_provider_malformed_output_fails_closed(monkeypatch) -> None:
     assert case["assessment_draft"] is None
     assert execution["adapter"] == "anthropic-claude"
     assert execution["status"] == "failed"
+    assert "not valid JSON" in response.json()["detail"]
+    assert "not valid JSON" in execution["failure_reason"]
+
+
+def test_anthropic_schema_error_reports_missing_field_without_model_output() -> None:
+    try:
+        main.GeneratedAssessment.model_validate_json('{"summary":"Synthetic summary"}')
+    except Exception as error:
+        reason = main.anthropic_failure_reason(error)
+    else:
+        raise AssertionError("The incomplete assessment should fail schema validation.")
+
+    assert "analyst_questions" in reason
+    assert "Synthetic summary" not in reason
 
 
 def test_anthropic_api_error_is_diagnosable_without_exposing_raw_error(monkeypatch) -> None:
