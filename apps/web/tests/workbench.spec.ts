@@ -89,6 +89,9 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await reviewerEvidence.getByText("Read evidence text").click();
   await expect(reviewerEvidence.locator("pre")).toContainText("Synthetic evidence for the analyst and committee review.");
   await expect(page.locator(".risk-inputs input")).toHaveCount(7);
+  await expect(page.locator(".risk-inputs .field-tip")).toHaveCount(7);
+  await page.getByLabel("Scoring guidance for customer risk").click();
+  await expect(page.getByRole("tooltip")).toContainText("customer types and segments in scope");
   for (const input of await page.locator(".risk-inputs input").all()) {
     await expect(input).toHaveValue("");
   }
@@ -154,7 +157,7 @@ test("administrator and committee govern source-linked policy revisions", async 
   await page.getByLabel("Acting as").selectOption("administrator");
   const navigation = page.getByRole("navigation", { name: "administrator workspace" });
   await navigation.getByRole("link", { name: "Policy sources" }).click();
-  await expect(page.getByText("Sample policy entries are for demonstration only", { exact: false })).toBeVisible();
+  await expect(page.getByText("Sample policy entries are for demonstration only", { exact: false })).toHaveCount(0);
 
   await page.getByLabel("Source ID").fill(firstSourceId);
   await page.getByLabel("Topic").fill("risk_based_approach");
