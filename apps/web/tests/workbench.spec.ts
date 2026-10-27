@@ -1,4 +1,19 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function fillIntake(page: Page, title: string) {
+  const form = page.locator("#product-intake");
+  await form.locator("input").nth(0).fill(title);
+  await form.locator("select").nth(0).selectOption("product_feature");
+  await form.locator("input").nth(1).fill("Synthetic Demo Owner");
+  await form.locator("input").nth(2).fill("2027-03-31T12:00");
+  await form.locator("select").nth(1).selectOption("moderate");
+  await form.locator("input").nth(3).fill("GB, US");
+  await form.locator("input").nth(4).fill("web, api");
+  await form.locator("input").nth(5).fill("synthetic cross-border business payments");
+  await form.locator("input").nth(6).fill("Synthetic Example Processor");
+  await form.locator("input").nth(7).fill("Sanctions screening, transaction monitoring");
+  await form.locator("textarea").fill("Synthetic test intake for validating the role-based workflow and review handoff.");
+}
 
 test("product owner creates a synthetic intake through the workbench", async ({ page }) => {
   const actorHeaders: string[] = [];
@@ -14,7 +29,11 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
   await expect(page.getByText("Demo mode", { exact: true })).toBeVisible();
   await expect(page.getByText(/Required role:/)).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "product owner workspace" }).getByRole("link", { name: "New intake" })).toBeVisible();
-  await page.locator("#product-intake input").first().fill("Browser workflow case");
+  await expect(page.locator("#product-intake input").first()).toHaveValue("");
+  await expect(page.locator("#product-intake textarea")).toHaveValue("");
+  await expect(page.locator("#product-intake select").nth(0)).toHaveValue("");
+  await expect(page.locator("#product-intake select").nth(1)).toHaveValue("");
+  await fillIntake(page, "Browser workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
 
   await expect(page.locator(".toast")).toContainText("Intake created. Product owner submission is now required.");
@@ -39,7 +58,7 @@ test("product owner creates a synthetic intake through the workbench", async ({ 
 
 test("analyst reviews deterministic scores and structured assessment draft", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#product-intake input").first().fill("Analyst review workflow case");
+  await fillIntake(page, "Analyst review workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
   await page.locator(".draft-actions").getByRole("button", { name: "Submit for intake review" }).click();
   await expect(page.locator(".toast")).toContainText("Case submitted for intake review.");
@@ -54,6 +73,13 @@ test("analyst reviews deterministic scores and structured assessment draft", asy
   await acknowledgeButton.click();
   await expect(page.locator(".toast")).toContainText("Workflow handoff acknowledged.");
   await expect(page.locator("#case-workspace")).toBeInViewport();
+  await expect(page.locator(".risk-inputs input")).toHaveCount(7);
+  for (const input of await page.locator(".risk-inputs input").all()) {
+    await expect(input).toHaveValue("");
+  }
+  for (const [index, score] of ["4", "5", "3", "4", "5", "3", "2"].entries()) {
+    await page.locator(".risk-inputs input").nth(index).fill(score);
+  }
   await page.getByRole("button", { name: "Run risk assessment" }).click();
   await expect(page.getByRole("heading", { name: "Analyst recommendation" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "How the score was calculated" })).toBeVisible();
@@ -112,6 +138,7 @@ test("administrator and committee govern source-linked policy revisions", async 
   await expect(page.getByText("Sample policy entries are for demonstration only", { exact: false })).toBeVisible();
 
   await page.getByLabel("Source ID").fill(firstSourceId);
+  await page.getByLabel("Topic").fill("risk_based_approach");
   await page.getByLabel("Title", { exact: true }).fill("Hackathon Policy Version One");
   await page.getByLabel("Source URL").fill("https://policy.example.test/hackathon-v1");
   await page.getByLabel("Policy excerpt").fill("E2E policy excerpt used only to verify version approval and retirement handling.");
@@ -146,9 +173,11 @@ test("administrator and committee govern source-linked policy revisions", async 
 
 test("product owner uploads synthetic text and sees extracted cues separately from its hash", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#product-intake input").first().fill("Evidence upload workflow case");
+  await fillIntake(page, "Evidence upload workflow case");
   await page.getByRole("button", { name: "Create intake" }).click();
   await expect(page.locator(".toast")).toContainText("Intake created.");
+  await page.getByLabel("Document title").fill("Synthetic control test report");
+  await page.getByLabel("Document type").fill("control_test");
   await page.locator('#evidence-upload input[type="file"]').setInputFiles({
     name: "synthetic-controls.md",
     mimeType: "text/markdown",
@@ -157,7 +186,7 @@ test("product owner uploads synthetic text and sees extracted cues separately fr
   await expect(page.getByRole("button", { name: "Upload and extract evidence" })).toBeEnabled();
   await page.getByRole("button", { name: "Upload and extract evidence" }).click();
   await expect(page.locator(".toast")).toContainText("Text evidence uploaded");
-  const evidence = page.locator(".evidence-provenance li").filter({ hasText: "Control test report" });
+  const evidence = page.locator(".evidence-provenance li").filter({ hasText: "Synthetic control test report" });
   await expect(evidence).toContainText("Jurisdictions: GB, US");
   await expect(evidence).toContainText("Sanctions screening, Transaction monitoring");
   await expect(evidence).toContainText("Content fingerprint (SHA-256)");
