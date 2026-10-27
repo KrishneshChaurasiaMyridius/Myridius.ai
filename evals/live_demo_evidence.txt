@@ -1,0 +1,90 @@
+Document title: Cross-Border Payments Pilot - Control Design and Sandbox Notes
+Document type: Synthetic control design and test summary
+Prepared for: Myridius.ai Risk Workbench walkthrough
+Scenario date: 27 October 2026
+Evidence classification: Fictional training material. No real customer, payment, vendor, system, or test data is included.
+
+1. CHANGE SUMMARY AND SCOPE
+
+The associated synthetic intake proposes a small-business cross-border payments pilot. The fictional customer journey begins in a web portal or through a business API, collects payment instructions, applies customer and payment checks, sends eligible instructions to a fictional third-party processor, and returns a payment status to the customer.
+
+The proposed jurisdiction scope is GB and US. The proposed channels are web and API. The payment flow is cross-border business payment activity. The product owner has listed Customer due diligence, Sanctions screening, Transaction monitoring, API authentication and authorization controls, Third-party access and assurance review, and fail-closed handling for unavailable screening services as proposed controls.
+
+The only illustrative observations in this file concern a synthetic GB web sandbox path. No US route, API route, processor environment, or production service was tested. The difference between the broad intake scope and narrow evidence scope is intentional and should be explored by the analyst.
+
+2. FICTIONAL PROCESS WALKTHROUGH
+
+The illustrative web flow is described as follows:
+
+1. A small-business user signs in to the fictional portal and enters a payment instruction using synthetic values.
+2. The proposed Customer due diligence control is intended to establish that onboarding checks are complete before payment access is enabled. This file contains no onboarding case, identity-check record, beneficial-ownership evidence, or approval result.
+3. The proposed Sanctions screening control is intended to check the payment parties before submission. In the illustrative GB web sandbox path, a screening call is described as being initiated before simulated submission. The underlying request, response, matching rules, test value, disposition, and reviewer sign-off are not attached.
+4. The proposed Transaction monitoring control is intended to create alerts for activity requiring review. A synthetic scenario is described as configured to produce a simulated alert. No alert record, disposition, escalation timeline, tuning record, or effectiveness sample is attached.
+5. The proposed API authentication and authorization controls are intended to ensure that only authorized business clients can submit permitted requests. No API credentials, test results, access-control matrix, rate-limit evidence, or negative test results are included.
+6. The fictional processor would receive eligible payment instructions. The proposed Third-party access and assurance review is intended to establish responsibilities, least-privilege access, incident notification, subcontractor oversight, and evidence of relevant safeguards. No processor contract, access review, assurance report, or incident exercise is attached.
+7. The proposed fail-closed handling is intended to prevent payment submission when required Sanctions screening or Transaction monitoring services are unavailable or return an unusable response. No timeout, outage, retry, queueing, duplicate-prevention, or recovery test results are included.
+
+3. CONTROL DESIGN AND INTENDED RISK MITIGATION
+
+Customer due diligence
+
+Intended mitigation: Complete required business-customer onboarding and risk checks before enabling payment initiation. Restrict or defer access when required information or checks are incomplete. Keep a reviewable record of the decision and any subsequent refresh requirement.
+
+Evidence needed: Applicable onboarding criteria, synthetic test cases, incomplete-information and exception paths, completion timestamps, reviewer or system attribution, and evidence that payment access remains blocked until required checks are complete. This file does not establish that these controls have been implemented.
+
+Sanctions screening
+
+Intended mitigation: Screen relevant payment parties before submission, route potential matches for authorized human review, and prevent release while a required screening outcome is missing or unresolved.
+
+Illustrative observation: A fictional GB web sandbox path is described as invoking screening before simulated submission. The source event and test record are not attached, so this is not independently verifiable evidence.
+
+Evidence needed: GB and US route coverage, web and API coverage, test scenarios and expected outcomes, screening configuration and list provenance, match handling, escalation and release controls, false-positive review, service-unavailable behavior, and reviewer sign-off.
+
+Transaction monitoring
+
+Intended mitigation: Identify activity that meets configured monitoring scenarios, generate a reviewable alert, assign it to an authorized reviewer, and retain disposition and escalation rationale.
+
+Illustrative observation: A synthetic monitoring scenario is described as configured to generate a simulated alert. No alert or disposition artifact is attached; configuration alone does not demonstrate effective monitoring.
+
+Evidence needed: Scenario rationale and coverage, representative synthetic alert examples, disposition and escalation steps, ownership, tuning and change history, service failure handling, and documented operating-effectiveness testing.
+
+API authentication and authorization
+
+Intended mitigation: Authenticate each approved business client, authorize access only to permitted operations and data, validate requests, and record security-relevant events. Apply appropriate abuse and rate controls based on approved design.
+
+Evidence needed: API security design, client and permission inventory, positive and negative authorization tests, request-validation results, rate-control tests, audit/logging evidence, credential lifecycle controls, and handling of authentication or authorization service failure. No API tests are included here.
+
+Third-party access and assurance
+
+Intended mitigation: Limit processor access to approved purposes and least privilege; define security responsibilities, incident notification, subcontractor controls, and evidence-review rights; periodically review access and relevant assurance material.
+
+Evidence needed: Verified processor identity and service scope, contract and responsibility mapping, access inventory and review, assurance evidence, incident and continuity arrangements, subcontractor details, and issue-remediation tracking. The processor name in the intake is fictional and no vendor materials are attached.
+
+Fail-closed service handling
+
+Intended mitigation: Do not submit a payment when a mandatory screening result is unavailable, incomplete, or invalid. Define bounded retry and recovery behavior, prevent duplicate submissions, alert an operator to persistent failures, and retain the decision trail.
+
+Evidence needed: Timeout and outage scenarios, retry and queue behavior, duplicate/idempotency tests, recovery evidence, operational alert ownership, and proof that a payment cannot bypass required checks. No service-failure tests are included here.
+
+4. ILLUSTRATIVE TEST NOTES AND LIMITS
+
+The scenario describes a single GB web sandbox path and an illustrative screening invocation. It does not provide a test date per case, sample size, test script, test data inventory, actual system event, expected-versus-actual result, control owner, independent witness, issue log, or approval. No actual payment was processed.
+
+The report does not include evidence for the US jurisdiction, the API channel, Customer due diligence completion, transaction-monitoring alert disposition, third-party access, processor assurance, production deployment, or service outage behavior. Do not infer that an unmentioned control is absent or failed; these are evidence gaps to investigate.
+
+5. ANALYST REVIEW QUESTIONS
+
+1. What authoritative scope and approval evidence supports offering the feature in both GB and US?
+2. Does Sanctions screening run on every relevant payment route, including both web and API, before submission?
+3. What happens when screening returns a possible match, times out, or is unavailable? Can the payment proceed under any exception path?
+4. What evidence demonstrates that Customer due diligence is complete before payment access is enabled?
+5. Which Transaction monitoring scenarios apply to the proposed payment flow, and how are alerts reviewed and escalated?
+6. What API authentication, authorization, request-validation, rate-control, and audit evidence is available?
+7. What access does the fictional processor require, and what assurance, incident, subcontractor, and access-review evidence should be obtained?
+8. What test evidence, owners, samples, approvals, and remediation records are required before the analyst considers the package decision-ready?
+
+These questions are prompts for human investigation. They are not findings of non-compliance, misconduct, or control failure.
+
+6. SYNTHETIC-DATA AND INTEGRITY NOTICE
+
+This file is intentionally fictional and suitable only for the synthetic-data walkthrough. It must not be used to represent a real business, customer, payment, processor, policy requirement, or completed control test. Any jurisdiction, control, or risk-indicator cues extracted by the workbench are deterministic keyword matches for review convenience, not full document analysis. A SHA-256 fingerprint can help verify that the stored text matches its recorded content; it does not prove that statements in the document are true.

@@ -116,8 +116,15 @@ button.secondary { background: var(--teal); }
 .decision-pack dl { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
 .decision-pack dt, .decision-pack li span { color: var(--muted); font: .7rem var(--font-ui); }
 .decision-pack dd { margin: 4px 0 0; }
+.decision-pack .decision-pack-wide { grid-column: 1 / -1; }
 .decision-pack ul { grid-column: 1 / -1; margin: 0; padding-left: 20px; }
 .decision-pack li span { display: block; margin-top: 4px; }
+.decision-pack .decision-evidence-list { list-style: none; padding: 0; }
+.decision-pack .decision-evidence-list li { border-top: 1px solid var(--line); display: grid; gap: 8px; padding: 14px 0; }
+.decision-pack .decision-evidence-list a { justify-self: start; font: 700 .78rem var(--font-ui); }
+.decision-pack .decision-evidence-list details { border-left: 3px solid var(--teal); padding-left: 12px; }
+.decision-pack .decision-evidence-list summary { cursor: pointer; font: 700 .78rem var(--font-ui); }
+.decision-pack .decision-evidence-list pre { background: white; border: 1px solid var(--line); font: .78rem/1.5 var(--font-ui); margin: 10px 0 0; max-height: 360px; overflow: auto; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .risk-breakdown { background: var(--surface); border-left: 5px solid var(--amber); display: grid; gap: 14px; grid-template-columns: minmax(220px, 1fr) minmax(0, 1.3fr); margin: 22px 0; padding: 20px; }
 .risk-breakdown h2 { margin-bottom: 7px; }
 .risk-breakdown > div { grid-row: span 2; }

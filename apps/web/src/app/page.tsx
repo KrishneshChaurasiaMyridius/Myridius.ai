@@ -41,7 +41,7 @@ type Case = {
   analyst_override?: { residual_risk: number };
   committee_decision?: { decision: string; conditions: { condition_id: string; description: string; owner: string; due_date: string; verification_criteria: string; status: string; verified_by?: string }[] };
   intake?: { title: string; change_type: string; business_rationale: string; business_owner: string; target_launch_date: string; jurisdictions: string[]; customer_exposure: string; delivery_channels: string[]; payment_characteristics: string[]; third_parties: string[]; proposed_controls: string[]; attachment_urls: string[] };
-  document_evidence?: { document_id: string; title: string; document_type: string; content_sha256?: string; content_size_bytes?: number; original_filename?: string; media_type?: string; ingestion_method: "structured_text" | "uploaded_text"; extracted_jurisdictions: string[]; extracted_controls: string[]; risk_indicators: string[] }[];
+  document_evidence?: { document_id: string; title: string; document_type: string; content: string; content_sha256?: string; content_size_bytes?: number; original_filename?: string; media_type?: string; ingestion_method: "structured_text" | "uploaded_text"; extracted_jurisdictions: string[]; extracted_controls: string[]; risk_indicators: string[] }[];
 };
 type AuditEvent = { event_id: string; action: string; actor: string; occurred_at: string };
 type EvidenceIntegrity = { document_id: string; valid: boolean; content_sha256?: string; content_size_bytes?: number };
@@ -566,12 +566,27 @@ export default function Home() {
           <section className="decision-pack" id="evidence-library">
             <div><p className="label">DECISION PACK</p><h2>Review material</h2></div>
             <dl>
-              <div><dt>Jurisdictions</dt><dd>{activeCase.intake?.jurisdictions.join(", ")}</dd></div>
-              <div><dt>Proposed controls</dt><dd>{activeCase.intake?.proposed_controls.join(", ")}</dd></div>
+              <div><dt>Change title</dt><dd>{activeCase.intake?.title ?? activeCase.title}</dd></div>
+              <div><dt>Change type</dt><dd>{activeCase.intake?.change_type.replaceAll("_", " ") ?? activeCase.change_type.replaceAll("_", " ")}</dd></div>
+              <div><dt>Business owner</dt><dd>{activeCase.intake?.business_owner ?? "Not provided"}</dd></div>
+              <div><dt>Target launch</dt><dd>{activeCase.intake?.target_launch_date ? new Date(activeCase.intake.target_launch_date).toLocaleString() : "Not provided"}</dd></div>
+              <div><dt>Customer exposure</dt><dd>{activeCase.intake?.customer_exposure ?? "Not provided"}</dd></div>
+              <div><dt>Jurisdictions</dt><dd>{activeCase.intake?.jurisdictions.join(", ") || "Not provided"}</dd></div>
+              <div><dt>Delivery channels</dt><dd>{activeCase.intake?.delivery_channels.join(", ") || "Not provided"}</dd></div>
+              <div><dt>Payment characteristics</dt><dd>{activeCase.intake?.payment_characteristics.join(", ") || "Not provided"}</dd></div>
+              <div><dt>Third parties</dt><dd>{activeCase.intake?.third_parties.join(", ") || "None listed"}</dd></div>
+              <div><dt>Proposed controls</dt><dd>{activeCase.intake?.proposed_controls.join(", ") || "None listed"}</dd></div>
+              <div className="decision-pack-wide"><dt>Business rationale</dt><dd>{activeCase.intake?.business_rationale ?? "Not provided"}</dd></div>
+              <div className="decision-pack-wide"><dt>Attachment URLs</dt><dd>{activeCase.intake?.attachment_urls.length ? activeCase.intake.attachment_urls.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer">{url}</a>) : "None provided"}</dd></div>
               <div><dt>Evidence records</dt><dd>{activeCase.document_evidence?.length ?? 0}</dd></div>
               <div><dt>Policy citations</dt><dd>{activeCase.assessment_draft?.citations.length ?? 0}</dd></div>
             </dl>
-            {activeCase.document_evidence?.length ? <ul>{activeCase.document_evidence.map((evidence) => <li key={evidence.document_id}><strong>{evidence.title}</strong><span>{evidence.document_type} · controls: {evidence.extracted_controls.join(", ") || "none detected"} · indicators: {evidence.risk_indicators.join(", ") || "none detected"}</span></li>)}</ul> : <p className="muted">No structured evidence recorded.</p>}
+            {activeCase.document_evidence?.length ? <ul className="decision-evidence-list">{activeCase.document_evidence.map((evidence) => <li key={evidence.document_id}>
+              <strong>{evidence.title}</strong>
+              <span>{evidence.document_type} · {evidence.ingestion_method === "uploaded_text" ? evidence.original_filename : "Structured text"} · controls: {evidence.extracted_controls.join(", ") || "none detected"} · indicators: {evidence.risk_indicators.join(", ") || "none detected"}</span>
+              <a href={`data:text/plain;charset=utf-8,${encodeURIComponent(evidence.content)}`} download={evidence.original_filename || `${evidence.title.replace(/[^A-Za-z0-9._-]+/g, "-")}.txt`}>Download evidence file</a>
+              <details><summary>Read evidence text</summary><pre>{evidence.content}</pre></details>
+            </li>)}</ul> : <p className="muted">No evidence recorded.</p>}
           </section>
           {activeCase.risk_assessment?.factor_scores && <section className="risk-breakdown">
             <div><p className="label">DETERMINISTIC RISK BREAKDOWN</p><h2>How the score was calculated</h2><p className="muted">Analyst-entered factor scores are combined using the configuration saved with this assessment. Controls reduce, but never eliminate, residual risk.</p></div>
